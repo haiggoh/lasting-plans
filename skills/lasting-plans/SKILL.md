@@ -11,8 +11,9 @@ Claude Code deletes top-level plan files in its plans folder (`~/.claude/plans`,
 before that happens:
 
 - `~/Claude-plans`: ordinary plans
-- `~/Claude-playbooks`: playbooks, handbooks and noun-sense manuals ("Manual: …",
-  "User Manual"), classified from the filename and first H1 only
+- `~/Claude-playbooks`: playbooks, handbooks, and noun-sense manuals and workflows
+  ("Manual: …", "Workflow — …", "User Manual"), classified from folder names, the
+  filename and the first H1 only
 
 Each archive is its own local Git repo. A sidecar (`.lasting-plans/docs/<id>.json`) per
 document records its stable id, source path, content hashes, creation and modification
@@ -33,6 +34,8 @@ don't dump the whole library into context.
 | Health / something pending | `lasting-plans doctor` |
 | Import right now | `lasting-plans sync` |
 | Record a known date or tag | `lasting-plans meta <ref> --created DATE --modified DATE --tag T` |
+| Filed in the wrong archive | `lasting-plans reclassify` (lists), then `reclassify <ref> plan\|playbook` |
+| Dates lost in a backup/migration | `lasting-plans recover-dates --since D [--until D] [--mtimes TSV]` (dry run), then `--apply --reason "…"` |
 
 Add `--json` for machine-readable output. Exit codes: 3 = no match, 4 = ambiguous
 reference (it lists the candidates, so ask which one or narrow the query), 5 = something is
@@ -51,7 +54,11 @@ pending or unhealthy.
 - **Local only.** The archives are local Git repos. That is not an off-machine backup, and
   v0.1 has no remote support. Never claim a plan is "backed up" to the cloud.
 - **Metadata honesty.** Dates in the sidecar carry their source (`filesystem birthtime`,
-  `user`, `unknown`). Report the source along with the date. Never invent one.
+  `user`, `recovered: <evidence>`, `unknown`). Report the source along with the date, and
+  say when a recovered creation date is only an *upper bound*. Never invent one.
+- **`recover-dates` is for a documented loss only.** Run it when the user says a backup or
+  migration reset their dates, show the dry run first, and apply only when asked, with a
+  `--reason` that names the loss.
 - If `lasting-plans` isn't found, say the plugin's CLI is unavailable. Don't answer from
   guesses.
 

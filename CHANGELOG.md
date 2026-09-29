@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.1 — 2026-09-29
+
+Fixes from the first run against a real plans folder (199 documents).
+
+- **Classifier:** *playbook* / *handbook* now count only as the leading or trailing word of
+  the filename or H1. "…plan and playbook preservation…" was being filed as a playbook.
+  *Workflow* is a new trigger word, in noun position only (`Workflow — …`, `… Release
+  Workflow`), like *manual*. A folder named `playbooks`, `handbooks` or `workflows`
+  (`_PLAYBOOKS/`) now decides on its own.
+- **`reclassify`:** a rule change never moves documents on its own. `doctor` lists the ones
+  the current rule would file differently, and `lasting-plans reclassify <ref>
+  plan|playbook` moves one between the archives, one commit in each, keeping its id.
+- **`recover-dates`:** repairs creation and modification dates after a *documented* loss
+  (a backup that stored no birth times). You give it the window the wrong dates fell in,
+  and it takes the strongest evidence available: backup-verified mtimes, a labelled date
+  in the text, the H1, the file name, or an upper bound from the last edit. It only moves
+  dates earlier, is a dry run unless `--apply --reason`, and records the evidence.
+  Recovered dates are never overwritten by later scans.
+- The 1984-01-24 no-creation-date placeholder is recorded as `unknown`, not as a date.
+- `watch --max-seconds` is honoured while idle. It used to sleep out the full 900 s interval.
+
 ## 0.1.0 — 2026-09-28
 
 First release.

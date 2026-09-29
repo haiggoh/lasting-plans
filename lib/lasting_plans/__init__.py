@@ -1,4 +1,4 @@
 """Lasting Plans — keep Claude Code plans and playbooks out of the retention sweep."""
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 PREFIX = "🗂️ Lasting Plans"
