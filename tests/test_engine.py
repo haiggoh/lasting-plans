@@ -495,3 +495,23 @@ def test_recover_dates_cli_is_dry_run_by_default(home):
     assert git(home / "Claude-plans", "rev-parse", "HEAD") == before
     r = run_cli(home, "recover-dates", "--since", "2000-01-01", "--until", "2100-01-01", "--apply")
     assert r.returncode == 2                                          # --reason is required
+
+
+def test_recover_replaces_recorded_1984_placeholder_with_upper_bound(home):
+    from lasting_plans import recover
+    put(src(home) / "a.md", "# no dates here\n")
+    scan()
+    lib = engine.Library()
+    d = lib.docs[0]
+    d.sc["created_utc"], d.sc["created_source"] = "1984-01-24T08:00:00Z", "filesystem birthtime"  # as 0.1.0 recorded it
+    engine.write_sidecar(d.root, d.sc)
+    ch = recover.plan(engine.Library(), metadata.parse_iso("1984-01-23"), metadata.parse_iso("1984-01-26"))
+    assert len(ch) == 1 and ch[0]["created"][1].startswith("upper bound: last modification")
+    assert ch[0]["created"][0] == metadata.parse_iso(d.sc["modified_utc"])
+
+
+def test_stage_code_writes_version_stamp(home, monkeypatch):
+    from lasting_plans import __version__, scheduler
+    monkeypatch.setattr(scheduler, "install_dir", lambda: str(home / "stage"))
+    scheduler.stage_code(os.path.join(ROOT, "lib"))
+    assert (home / "stage" / "VERSION").read_text().strip() == __version__
