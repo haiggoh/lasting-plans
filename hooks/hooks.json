@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.py\" 2>/dev/null || true",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}
