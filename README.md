@@ -154,12 +154,37 @@ lasting-plans meta <ref> --created D --modified D --tag T | --apply
 lasting-plans reclassify [<ref> plan|playbook]   # no ref: list what the classifier would move
 lasting-plans recover-dates --since D [--until D] [--mtimes TSV] [--apply --reason R]
 lasting-plans remote status|set|create-github|push|off|clone …
+lasting-plans label [<ref> --add X --remove Y]  # no ref: every label with its count
 lasting-plans doctor
 lasting-plans settings show|set KEY VALUE|reset KEY
 lasting-plans scheduler install|uninstall|status
 lasting-plans watch [--once]          # what launchd runs
 lasting-plans setup [--no-scheduler]  # what the first session runs
 ```
+
+### Finding things in the library
+
+```
+lasting-plans list --group-by month|year|day   # by CREATION date; `unknown` always last
+lasting-plans list --label infra --label cost  # documents with all of these labels
+lasting-plans search "words" --history         # every committed revision, deleted text too
+lasting-plans show <ref> --rev 1               # the first imported text
+lasting-plans diff <ref> 1 latest              # any two revisions
+```
+
+A revision is `N` (1 = the first imported text), `-N` (N back from the latest), `first`,
+`latest`, `@YYYY-MM-DD` (the text as it was that day), or a commit sha. Only commits that
+changed the **text** are revisions. Moves, tag and label changes, and scans that found
+nothing aren't, so `show` reports an honest update count and rate per 30 days.
+
+`show` keeps three dates apart: **created** (with where that date came from, possibly
+`unknown`), **first seen** (when Lasting Plans first imported it) and **last content edit**.
+A Git commit date is when the archive recorded a change, so it is never passed off as a
+creation date, and a document with no known creation date goes in the `unknown` group.
+
+**Labels** are your own topic words, stored in the sidecar, so they travel with a clone and
+work on every OS. They're separate from Finder tags and never change whether a document is
+a plan or a playbook.
 
 `--json` on every command. `<ref>` is an id, an id prefix, or a unique path fragment.
 Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 ambiguous, 5 pending/unhealthy.
