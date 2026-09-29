@@ -10,7 +10,7 @@ import sys
 
 from . import PREFIX, __version__
 from . import config as cfgmod
-from . import engine, gitrepo, metadata, remote, scheduler
+from . import engine, gitrepo, library, metadata, remote, scheduler
 
 LIB_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -135,6 +135,20 @@ def cmd_list(args):
     docs = sorted(lib.docs, key=lambda d: d.sc["archive_relpath"].lower())
     if args.type:
         docs = [d for d in docs if d.type == args.type]
+    if args.label:
+        docs = [d for d in docs if all(x in library.labels_of(d) for x in args.label)]
+    if args.group_by:
+        groups = library.grouped(docs, args.group_by)
+        lines = []
+        for k, ds in groups:
+            lines.append("%s  (%d)" % (k, len(ds)))
+            shown = ds if args.limit == 0 else ds[: args.limit]
+            lines += ["  " + _doc_line(d, lib.source) for d in shown]
+            if len(shown) < len(ds):
+                lines.append("  … %d more in %s (--limit 0 shows all)" % (len(ds) - len(shown), k))
+        out(args, "\n".join(lines) or "%s: no documents" % PREFIX,
+            {"group_by": args.group_by, "groups": [{"key": k, "count": len(ds), "ids": [d.id for d in ds]} for k, ds in groups]})
+        return 0
     total = len(docs)
     page = docs[args.offset: args.offset + args.limit] if args.limit else docs[args.offset:]
     human = "\n".join([_doc_line(d, lib.source) for d in page] +
@@ -153,9 +167,22 @@ def cmd_show(args):
     if os.path.exists(d.path):
         with open(d.path, encoding="utf-8", errors="replace") as f:
             text = f.read()
+    if args.rev:
+        try:
+            sha = library.resolve_rev(d, args.rev)
+            text = library.text_at(d, sha)
+        except LookupError as e:
+            print("%s: %s" % (PREFIX, e), file=sys.stderr)
+            return 3
+        j["shown_revision"] = sha
+    j.update(activity=library.activity(d), labels=library.labels_of(d))
+    a = j["activity"]
+    j["dates"] = "created %s (%s) · first seen %s · last content edit %s" % (
+        (a["created"] or "unknown")[:16], a["created_source"], (a["first_seen"] or "?")[:16], (a["last_content_edit"] or "?")[:16])
+    j["updates"] = "%d content revision(s), %d update(s), %.2f per 30 days" % (a["content_revisions"], a["updates"], a["updates_per_30d"])
     meta = "\n".join("  %-18s %s" % (k, j[k]) for k in (
-        "id", "type", "type_reason", "archive_path", "source_relpath", "source_present", "created_utc",
-        "created_source", "modified_utc", "first_seen_utc", "tags") if k in j)
+        "id", "type", "type_reason", "archive_path", "source_relpath", "source_present", "dates",
+        "updates", "tags", "labels", "shown_revision") if j.get(k) not in (None, [], ""))
     if args.full:
         body = text
     else:
@@ -168,7 +195,18 @@ def cmd_show(args):
 
 def cmd_search(args):
     lib = engine.Library()
-    hits = engine.search(lib, args.query, regex=args.regex, limit=args.limit)
+    if args.history:
+        hits = library.search_history(lib, args.query, regex=args.regex, limit=args.limit + args.offset)[args.offset:]
+        if not hits:
+            out(args, "%s: %r never appeared in any revision" % (PREFIX, args.query), {"hits": []})
+            return 3
+        lines = []
+        for h in hits:
+            lines.append("%s  %s  %s" % (h["id"] or "(untracked)", h["path"], "in current text" if h["in_current"] else "ONLY in older revisions"))
+            lines += ["    %s  %s  %s" % (c["sha"][:10], c["date"][:10], c["subject"][:70]) for c in h["commits"][:5]]
+        out(args, "\n".join(lines), {"hits": hits})
+        return 0
+    hits = engine.search(lib, args.query, regex=args.regex, limit=args.limit + args.offset)[args.offset:]
     if not hits:
         out(args, "%s: no match for %r in %d document(s)" % (PREFIX, args.query, len(lib.docs)), {"hits": []})
         return 3
@@ -185,7 +223,11 @@ def cmd_history(args):
     lib = engine.Library()
     d = _one(lib, args.ref)
     h = engine.history(d)
-    out(args, "\n".join("%s  %s  %-8s %s" % (x["sha"][:10], x["date"][:19], x["kind"], x["subject"]) for x in h) or "no history",
+    nums = {r["sha"]: r["n"] for r in library.revisions(d)}
+    for x in h:
+        x["revision"] = nums.get(x["sha"])
+    out(args, "\n".join("%s  %s  %-8s %-4s %s" % (x["sha"][:10], x["date"][:19], x["kind"],
+                                                  ("r%d" % x["revision"]) if x["revision"] else "", x["subject"]) for x in h) or "no history",
         {"id": d.id, "history": h})
     return 0
 
@@ -193,7 +235,13 @@ def cmd_history(args):
 def cmd_diff(args):
     lib = engine.Library()
     d = _one(lib, args.ref)
-    text = engine.diff(d, args.rev_a, args.rev_b)
+    try:
+        a = library.resolve_rev(d, args.rev_a) if args.rev_a else None
+        b = library.resolve_rev(d, args.rev_b) if args.rev_b else None
+    except LookupError as e:
+        print("%s: %s" % (PREFIX, e), file=sys.stderr)
+        return 3
+    text = engine.diff(d, a, b)
     out(args, text or "%s: no differences" % PREFIX, {"id": d.id, "diff": text})
     return 0
 
@@ -339,6 +387,24 @@ def cmd_remote(args):
     return 2
 
 
+def cmd_label(args):
+    lib = engine.Library()
+    if not args.ref:
+        labels = library.all_labels(lib)
+        out(args, "\n".join("  %-30s %d" % kv for kv in labels) or "%s: no labels yet" % PREFIX,
+            {"labels": [{"label": k, "count": n} for k, n in labels]})
+        return 0
+    d = _one(lib, args.ref)
+    try:
+        sha = library.set_labels(d, args.add or [], args.remove or [])
+    except ValueError as e:
+        print("%s: %s" % (PREFIX, e), file=sys.stderr)
+        return 2
+    out(args, "%s: %s labels: %s" % (PREFIX, d.id, ", ".join(library.labels_of(d)) or "(none)"),
+        {"id": d.id, "labels": library.labels_of(d), "commit": sha})
+    return 0
+
+
 def cmd_doctor(args):
     lib = engine.Library()
     checks = engine.doctor(lib)
@@ -424,6 +490,8 @@ MENU = [
     ("sync", "Sync now (import new/changed plans)", []),
     ("list", "List documents", []),
     ("search", "Search full text", ["query"]),
+    ("search --history", "Search every past revision", ["query"]),
+    ("list --group-by month", "Documents by creation month", []),
     ("show", "Show a document", ["ref"]),
     ("history", "History of a document", ["ref"]),
     ("diff", "Diff latest change of a document", ["ref"]),
@@ -490,19 +558,25 @@ def build_parser():
     s.add_argument("--no-push", action="store_true", help="skip the remote push this time")
     s = add("list", cmd_list, "list archived documents")
     s.add_argument("--type", choices=["plan", "playbook"])
-    s.add_argument("--limit", type=int, default=50)
+    s.add_argument("--label", action="append", help="only documents with this label (repeatable = all of them)")
+    s.add_argument("--group-by", choices=["month", "year", "day"], help="group by CREATION date; `unknown` last")
+    s.add_argument("--limit", type=int, default=50, help="0 = no limit (per group with --group-by)")
     s.add_argument("--offset", type=int, default=0)
     s = add("show", cmd_show, "show one document's metadata and text")
     s.add_argument("ref", help="id, id prefix, or path fragment")
     s.add_argument("--full", action="store_true", help="whole text (default: first --lines)")
+    s.add_argument("--rev", help="show an older revision: N, -N, first, latest, @YYYY-MM-DD, or a sha")
     s.add_argument("--lines", type=int, default=40)
     s = add("search", cmd_search, "search the FULL text of every archived document")
     s.add_argument("query")
     s.add_argument("--regex", action="store_true")
+    s.add_argument("--history", action="store_true", help="search EVERY committed revision, including deleted text")
     s.add_argument("--limit", type=int, default=50)
+    s.add_argument("--offset", type=int, default=0)
     s = add("history", cmd_history, "commits touching a document (content vs metadata)")
     s.add_argument("ref")
-    s = add("diff", cmd_diff, "diff a document: latest content change, or REV_A [REV_B]")
+    s = add("diff", cmd_diff, "diff a document: latest content change, or REV_A [REV_B] "
+            "(N, -N, first, latest, @YYYY-MM-DD, or a sha)")
     s.add_argument("ref")
     s.add_argument("rev_a", nargs="?")
     s.add_argument("rev_b", nargs="?")
@@ -525,6 +599,10 @@ def build_parser():
     s.add_argument("--apply", action="store_true", help="write the dates (default: show what would change)")
     s.add_argument("--reason", help="what lost the dates; recorded in each sidecar (required with --apply)")
     s.add_argument("-v", "--verbose", action="store_true")
+    s = add("label", cmd_label, "explicit topic labels: `label` lists them, `label REF --add X --remove Y` edits")
+    s.add_argument("ref", nargs="?")
+    s.add_argument("--add", action="append")
+    s.add_argument("--remove", action="append")
     s = add("remote", cmd_remote, "optional PRIVATE off-machine copy: status [--verify] | set | create-github | push | off | clone")
     s.add_argument("action", choices=["status", "set", "create-github", "push", "off", "clone"])
     s.add_argument("archive", nargs="?", choices=["plan", "playbook", "all"])

@@ -731,3 +731,125 @@ def test_tools_system_paths_are_absolute_and_path_is_ignored(tmp_path, monkeypat
         assert ("xattr", str(fake), "/usr/bin/xattr") in tools.shadows()
     with pytest.raises(ValueError):
         tools.on_path("xattr")
+
+
+# ------------------------------------------------------------------ 0.3.0 library
+
+def _three_revisions(home):
+    p = src(home) / "doc.md"
+    put(p, "# Doc\n\nfirst draft mentions ZEPHYR\n", mtime=OLD - 300)
+    scan()
+    put(p, "# Doc\n\nsecond draft\n", mtime=OLD - 200)
+    scan()
+    put(p, "# Doc\n\nthird draft\n", mtime=OLD - 100)
+    scan()
+    return engine.Library().resolve("doc.md")[0]
+
+
+def test_revision_selectors_and_old_text(home):
+    from lasting_plans import library
+    d = _three_revisions(home)
+    revs = library.revisions(d)
+    assert [r["n"] for r in revs] == [3, 2, 1]
+    assert "ZEPHYR" in library.text_at(d, library.resolve_rev(d, "1"))
+    assert library.resolve_rev(d, "first") == library.resolve_rev(d, "1")
+    assert library.resolve_rev(d, "latest") == revs[0]["sha"] == library.resolve_rev(d, "3")
+    assert library.resolve_rev(d, "-1") == revs[1]["sha"]
+    assert library.resolve_rev(d, revs[2]["sha"][:8]) == revs[2]["sha"]
+    for bad in ("9", "-3", "-4", "nope", "@1999-01-01"):
+        # match our message: a bare IndexError is also a LookupError and would pass
+        with pytest.raises(LookupError, match="revision|too far"):
+            library.resolve_rev(d, bad)
+    r = run_cli(home, "show", "doc.md", "--rev", "1")
+    assert r.returncode == 0 and "ZEPHYR" in r.stdout
+    assert run_cli(home, "show", "doc.md", "--rev", "9").returncode == 3
+    r = run_cli(home, "diff", "doc.md", "1", "3")
+    assert r.returncode == 0 and "-first draft mentions ZEPHYR" in r.stdout and "+third draft" in r.stdout
+    assert run_cli(home, "diff", "doc.md", "1", "9").returncode == 3
+
+
+def test_historical_search_finds_text_only_in_old_revision(home):
+    d = _three_revisions(home)
+    r = run_cli(home, "search", "zephyr")                      # current text: no match
+    assert r.returncode == 3
+    r = run_cli(home, "search", "zephyr", "--history")         # case-insensitive, all revisions
+    assert r.returncode == 0 and "ONLY in older revisions" in r.stdout and d.id in r.stdout
+    assert run_cli(home, "search", "never-written-anywhere", "--history").returncode == 3
+
+
+def test_activity_counts_content_commits_not_scans_or_metadata(home):
+    from lasting_plans import library
+    d = _three_revisions(home)
+    for _ in range(3):
+        scan()                                                   # scans alone change nothing
+    engine.set_metadata(d, add_tags=["Blau\n4"]) if metadata.IS_MAC else None
+    library.set_labels(engine.Library().resolve("doc.md")[0], add=["infra"])
+    (src(home) / "sub").mkdir()                                  # a move is not an update either
+    os.rename(src(home) / "doc.md", src(home) / "sub" / "doc.md")
+    scan()
+    d = engine.Library().resolve("sub/doc.md")[0]
+    assert len(engine.history(d)) > 3                              # there ARE non-content commits
+    a = library.activity(d)
+    assert a["content_revisions"] == 3 and a["updates"] == 2
+    assert a["first_seen"] and a["last_content_edit"]
+    assert a["created"] != a["last_content_edit"]
+
+
+def test_move_is_not_a_content_revision(home):
+    from lasting_plans import library
+    put(src(home) / "a.md", "# a\n")
+    scan()
+    (src(home) / "sub").mkdir()
+    os.rename(src(home) / "a.md", src(home) / "sub" / "a.md")
+    scan()
+    d = engine.Library().resolve("sub/a.md")[0]
+    assert len(library.revisions(d)) == 1
+    assert "# a" in library.text_at(d, library.resolve_rev(d, "1"))
+
+
+def test_group_by_creation_date_with_unknown_bucket_last(home):
+    from lasting_plans import library
+    put(src(home) / "a.md", "# a\n")
+    put(src(home) / "b.md", "# b\n")
+    scan()
+    lib = engine.Library()
+    a, b = lib.resolve("a.md")[0], lib.resolve("b.md")[0]
+    a.sc["created_utc"] = "2026-07-15T10:00:00Z"
+    b.sc["created_utc"] = None
+    b.sc["created_source"] = "unknown"
+    for d in (a, b):
+        engine.write_sidecar(d.root, d.sc)
+    groups = library.grouped(engine.Library().docs, "month")
+    assert [k for k, _ in groups][-1] == "unknown"
+    assert "2026-07" in [k for k, _ in groups]
+    # a commit date is never used as a creation date
+    assert library.group_key(engine.Library().resolve("b.md")[0], "month") == "unknown"
+    r = run_cli(home, "list", "--group-by", "month")
+    assert r.returncode == 0 and r.stdout.rstrip().splitlines()[-2].startswith("unknown")
+
+
+def test_labels_are_explicit_validated_and_filterable(home):
+    put(src(home) / "a.md", "# a\n")
+    put(src(home) / "b.md", "# b\n")
+    scan()
+    assert run_cli(home, "label", "a.md", "--add", "infra", "--add", "cost").returncode == 0
+    assert run_cli(home, "label", "a.md", "--add", "bad\nlabel").returncode == 2
+    assert run_cli(home, "label", "a.md", "--add", "").returncode == 2
+    r = run_cli(home, "list", "--label", "infra")
+    assert "a.md" in r.stdout and "b.md" not in r.stdout
+    assert "infra" in run_cli(home, "label").stdout
+    run_cli(home, "label", "a.md", "--remove", "infra")
+    assert "a.md" not in run_cli(home, "list", "--label", "infra").stdout
+    assert "labels:" in git(home / "Claude-plans", "log", "-1", "--format=%s")
+
+
+def test_huge_multibyte_document_is_bounded_by_default(home):
+    body = "# Größe — 日本語\n" + ("Zeile mit Umlauten äöü und 漢字\n" * 5000)
+    put(src(home) / "big.md", body)
+    scan()
+    r = run_cli(home, "show", "big.md")
+    assert r.returncode == 0 and len(r.stdout.splitlines()) < 80 and "more line(s)" in r.stdout
+    r = run_cli(home, "search", "漢字", "--limit", "1")
+    assert r.returncode == 0 and len(r.stdout) < 2000
+    r = run_cli(home, "show", "big.md", "--full", "--json")
+    assert json.loads(r.stdout)["content"] == body

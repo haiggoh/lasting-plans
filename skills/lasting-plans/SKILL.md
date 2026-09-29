@@ -31,6 +31,10 @@ don't dump the whole library into context.
 | List | `lasting-plans list [--type plan\|playbook] [--limit N --offset M]` |
 | Read one | `lasting-plans show <id-or-name-fragment> [--full]` |
 | What changed | `lasting-plans history <ref>` / `lasting-plans diff <ref> [REV_A [REV_B]]` |
+| An older version | `lasting-plans show <ref> --rev 1\|-1\|@2026-08-20\|<sha>` |
+| Text that was deleted since | `lasting-plans search "<words>" --history` |
+| Plans from a period | `lasting-plans list --group-by month` (creation date; `unknown` bucket) |
+| Topic labels | `lasting-plans label` (list) · `lasting-plans list --label X` · `label <ref> --add X` |
 | Health / something pending | `lasting-plans doctor` |
 | Import right now | `lasting-plans sync` |
 | Record a known date or tag | `lasting-plans meta <ref> --created DATE --modified DATE --tag T` |
@@ -58,7 +62,9 @@ pending or unhealthy.
   is not. Never add, change or push to a remote unless the user asks, and never force.
 - **Metadata honesty.** Dates in the sidecar carry their source (`filesystem birthtime`,
   `user`, `recovered: <evidence>`, `unknown`). Report the source along with the date, and
-  say when a recovered creation date is only an *upper bound*. Never invent one.
+  say when a recovered creation date is only an *upper bound*. Never invent one, and never
+  give a Git commit date or the first-seen date as the creation date: `show` lists all three
+  separately.
 - **`recover-dates` is for a documented loss only.** Run it when the user says a backup or
   migration reset their dates, show the dry run first, and apply only when asked, with a
   `--reason` that names the loss.

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 — 2026-09-29
+
+Library usability.
+
+- **Revisions:** `show --rev` and `diff REV_A [REV_B]` take `N` (1 = first imported text),
+  `-N`, `first`, `latest`, `@YYYY-MM-DD` or a sha. Only text-changing commits count, so
+  moves, tag and label changes, and empty scans don't. `history` numbers each content
+  revision.
+- **Historical search:** `search --history` finds text in any committed revision (case
+  insensitive), and marks hits that exist *only* in older revisions.
+- **Dates kept apart:** `show` reports created (with its provenance), first seen, and last
+  content edit separately, plus the update count and updates per 30 days. A commit date is
+  never used as a creation date.
+- **Grouping:** `list --group-by month|year|day` groups by creation date, with an
+  `unknown` bucket last.
+- **Labels:** `label <ref> --add/--remove` for your own topic labels (validated, portable,
+  stored in the sidecar), `label` lists them with counts, and `list --label` filters.
+- `search` gains `--offset` for paging.
+
 ## 0.2.0 — 2026-09-29
 
 - **Optional private remote per archive** (`lasting-plans remote …`): `create-github`
