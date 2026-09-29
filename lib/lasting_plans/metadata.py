@@ -6,9 +6,10 @@ invents a value. Tag writes are additive (union), so a user's existing tags surv
 import datetime
 import os
 import plistlib
-import shutil
 import subprocess
 import sys
+
+from . import tools
 
 TAGS_ATTR = "com.apple.metadata:_kMDItemUserTags"
 FINDERINFO_ATTR = "com.apple.FinderInfo"
@@ -85,6 +86,18 @@ def write_raw_xattr(path, name, data):
     return lib.setxattr(os.fsencode(path), name.encode(), data, len(data), 0, XATTR_NOFOLLOW) == 0
 
 
+def remove_raw_xattr(path, name):
+    lib = _lib()
+    if lib is None:
+        return False
+    if not hasattr(lib, "_rm_ready"):
+        import ctypes
+        lib.removexattr.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+        lib.removexattr.restype = ctypes.c_int
+        lib._rm_ready = True
+    return lib.removexattr(os.fsencode(path), name.encode(), XATTR_NOFOLLOW) == 0
+
+
 def read_tags(path):
     raw = read_raw_xattr(path, TAGS_ATTR)
     if not raw:
@@ -135,11 +148,12 @@ def observe(path):
 
 def set_birthtime(path, ts):
     """macOS only, via SetFile (Xcode CLT). Returns True only if a re-read confirms it."""
-    if not IS_MAC or not shutil.which("SetFile"):
+    setfile = tools.system("SetFile") if IS_MAC else None
+    if not setfile:
         return False
     stamp = datetime.datetime.fromtimestamp(ts).strftime("%m/%d/%Y %H:%M:%S")
     try:
-        r = subprocess.run(["SetFile", "-d", stamp, path], capture_output=True, timeout=10)
+        r = subprocess.run([setfile, "-d", stamp, path], capture_output=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return False
     if r.returncode != 0:

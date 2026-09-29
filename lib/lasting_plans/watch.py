@@ -11,7 +11,7 @@ import select
 import time
 
 from . import config as cfgmod
-from . import engine
+from . import engine, remote
 
 DEBOUNCE = 1.5
 
@@ -88,6 +88,13 @@ def _run_scan(reason):
             _log("  %s %s %s" % (e[0], e[2], e[3]))
         for p in res.pending + res.errors:
             _log("  ! %s: %s" % p)
+    # cheap when in sync (a local HEAD comparison); a failed push stays pending and is
+    # retried after the next scan
+    try:
+        for kind, ok, detail in remote.auto_push(lib):
+            _log("remote %s: %s%s" % (kind, "" if ok else "PENDING — ", detail))
+    except Exception as e:
+        _log("remote push FAILED: %s" % e)
 
 
 def run(once=False, max_seconds=None):

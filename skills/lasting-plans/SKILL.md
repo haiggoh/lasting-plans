@@ -35,6 +35,8 @@ don't dump the whole library into context.
 | Import right now | `lasting-plans sync` |
 | Record a known date or tag | `lasting-plans meta <ref> --created DATE --modified DATE --tag T` |
 | Filed in the wrong archive | `lasting-plans reclassify` (lists), then `reclassify <ref> plan\|playbook` |
+| Is it backed up off this Mac? | `lasting-plans remote status --verify` |
+| Push now | `lasting-plans remote push` |
 | Dates lost in a backup/migration | `lasting-plans recover-dates --since D [--until D] [--mtimes TSV]` (dry run), then `--apply --reason "…"` |
 
 Add `--json` for machine-readable output. Exit codes: 3 = no match, 4 = ambiguous
@@ -51,8 +53,9 @@ pending or unhealthy.
 - **Conflicts keep both copies.** If the archive copy was edited and the source changed
   too, the source version is saved next to it as `… (source edit <stamp>).md`. Merging the
   two is the user's call.
-- **Local only.** The archives are local Git repos. That is not an off-machine backup, and
-  v0.1 has no remote support. Never claim a plan is "backed up" to the cloud.
+- **Remote honesty.** Local Git alone is not an off-machine backup. Say a plan is backed up
+  remotely only when `remote status --verify` reports `in sync`; `pending remote` means it
+  is not. Never add, change or push to a remote unless the user asks, and never force.
 - **Metadata honesty.** Dates in the sidecar carry their source (`filesystem birthtime`,
   `user`, `recovered: <evidence>`, `unknown`). Report the source along with the date, and
   say when a recovered creation date is only an *upper bound*. Never invent one.

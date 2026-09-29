@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.0 — 2026-09-29
+
+- **Optional private remote per archive** (`lasting-plans remote …`): `create-github`
+  makes a PRIVATE repo via `gh`, `set` takes any Git URL after a privacy check (a public
+  GitHub repo is refused), and `push`, `status [--verify]`, `off` and `clone` do the rest.
+  A push counts only once the remote's tip is read back and matches. Rejected, failed and
+  offline pushes stay `pending remote` and make `status` exit 5. Nothing is ever forced.
+  Auto push after each committing scan is the default once a remote is set.
+  `remote clone` restores an archive on a new machine and re-applies dates and tags.
+- **Folder tags:** Finder tags on source folders are mirrored onto the archive folders,
+  recorded in `.lasting-plans/folders.json` (additive), and restored by `clone`.
+- **Tool resolution guard:** system tools are run by absolute path from one module
+  (`tools.py`), and a test fails the build if any other module runs one by bare name.
+  `doctor` notes when your PATH shadows a system tool, such as pipx's `xattr`.
+
 ## 0.1.2 — 2026-09-29
 
 - `recover-dates` now also repairs documents that 0.1.0 had already recorded with the

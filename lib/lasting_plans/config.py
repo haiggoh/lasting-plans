@@ -15,6 +15,8 @@ DEFAULTS = {
     "scheduler_enabled": True,
     "interval_seconds": 900,
     "classify_overrides": {},    # source-relative path -> "plan" | "playbook"
+    "remotes": {},               # "plan" / "playbook" -> private Git URL; empty = local only
+    "remote_push": "auto",       # "auto": push after each committing scan; "manual": only on `remote push`
 }
 TYPES = {
     "source_dir": (str, type(None)),
@@ -23,6 +25,8 @@ TYPES = {
     "scheduler_enabled": bool,
     "interval_seconds": int,
     "classify_overrides": dict,
+    "remotes": dict,
+    "remote_push": str,
 }
 
 
@@ -62,6 +66,10 @@ def load():
     for k, t in TYPES.items():
         if not isinstance(cfg.get(k), t):
             raise ConfigError("config key %r has wrong type %s" % (k, type(cfg.get(k)).__name__))
+    if cfg["remote_push"] not in ("auto", "manual"):
+        raise ConfigError("remote_push must be auto or manual")
+    if set(cfg["remotes"]) - {"plan", "playbook"}:
+        raise ConfigError("remotes keys must be plan/playbook")
     if cfg["interval_seconds"] < 60:
         raise ConfigError("interval_seconds must be >= 60")
     return cfg
@@ -111,6 +119,8 @@ def parse_value(key, raw):
             raise ConfigError("expected an integer") from None
     if key == "source_dir":
         return None if raw in ("", "auto") else raw
+    if key == "remotes":
+        raise ConfigError("use `lasting-plans remote set plan|playbook URL` (it checks privacy first)")
     if key == "classify_overrides":
         try:
             v = json.loads(raw)

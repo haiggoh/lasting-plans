@@ -18,13 +18,12 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import time
 import uuid
 
 from . import classify as classify_mod
 from . import config as cfgmod
-from . import gitrepo, metadata
+from . import gitrepo, metadata, tools
 
 META_DIR = ".lasting-plans"
 DOC_RX = re.compile(r"(\.(md|markdown|txt)(\.[^/]*)?|md)$", re.I)
@@ -305,6 +304,7 @@ def scan(lib=None):
         _scan_source(lib, res)
         lib.reload()
         _scan_archive_edits(lib, res)
+        _sync_folder_tags(lib, res)
         _retry_uncommitted(lib, res)
     _write_last_run(res)
     return res
@@ -489,6 +489,69 @@ def _scan_archive_edits(lib, res):
                 write_sidecar(root, doc.sc)
                 if _commit(lib, root, rel, doc.id, "archive edit: %s" % rel, res):
                     res.add("archive-edit", doc.id, rel)
+
+
+FOLDERS_REL = META_DIR + "/folders.json"
+
+
+def load_folder_tags(root):
+    try:
+        with open(os.path.join(root, FOLDERS_REL), encoding="utf-8") as f:
+            d = json.load(f)
+        return d.get("tags", {}) if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _sync_folder_tags(lib, res):
+    """Finder tags on SOURCE folders are mirrored onto the same folders in each archive
+    that has them, and recorded in <root>/.lasting-plans/folders.json so a clone can put
+    them back. Additive, like file tags: a tag is never removed from an archive folder."""
+    if not metadata.IS_MAC:
+        return
+    src_tags = {}
+    src = os.path.realpath(lib.source)
+    for d, dirs, _ in os.walk(src, followlinks=False):
+        dirs[:] = sorted(x for x in dirs if not x.startswith(".") and not os.path.islink(os.path.join(d, x)))
+        for x in dirs:
+            p = os.path.join(d, x)
+            t = metadata.read_tags(p)
+            if t:
+                src_tags[os.path.relpath(p, src)] = t
+    for root in lib.roots.values():
+        rec = load_folder_tags(root)
+        changed = []
+        for rel, tags in sorted(src_tags.items()):
+            ap = os.path.join(root, rel)
+            if not os.path.isdir(ap) or os.path.islink(ap):
+                continue  # only folders that hold archived documents exist here
+            have = rec.get(rel, [])
+            want = have + [t for t in tags if t not in have]
+            if want != have:
+                rec[rel] = want
+                changed.append(rel)
+            if not metadata.write_tags(ap, rec[rel]):
+                res.pending.append((rel + "/", "could not apply folder tags"))
+        if changed:
+            cfgmod.atomic_write(os.path.join(root, FOLDERS_REL),
+                                json.dumps({"schema": 1, "tags": rec}, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+            if gitrepo.has_identity(root):
+                try:
+                    gitrepo.commit_paths(root, [FOLDERS_REL], "metadata: folder tags on %s" % ", ".join(changed[:5]))
+                    for rel in changed:
+                        res.add("metadata", "-", rel + "/", "folder tags " + ", ".join(t.split("\n")[0] for t in rec[rel]))
+                except gitrepo.GitError as e:
+                    res.pending.append((FOLDERS_REL, "uncommitted: %s" % e))
+
+
+def apply_folder_tags(root):
+    """Re-apply recorded folder tags (after a clone). Returns folders that failed."""
+    bad = []
+    for rel, tags in load_folder_tags(root).items():
+        p = os.path.join(root, rel)
+        if os.path.isdir(p) and not metadata.write_tags(p, tags):
+            bad.append(rel)
+    return bad
 
 
 def _retry_uncommitted(lib, res):
@@ -687,7 +750,7 @@ def doctor(lib):
     def add(name, ok, detail=""):
         checks.append({"check": name, "ok": ok, "detail": detail})
 
-    add("git installed", shutil.which("git") is not None)
+    add("git installed", tools.on_path("git") is not None)
     add("source folder exists", os.path.isdir(lib.source), lib.source)
     for t, r in lib.roots.items():
         is_repo = os.path.isdir(os.path.join(r, ".git"))
@@ -701,6 +764,9 @@ def doctor(lib):
     add("every archive document present", not miss, ", ".join(miss[:5]))
     st = status(lib)
     add("every source document protected", not st["unprotected"], "%d unprotected" % len(st["unprotected"]))
+    for name, hit, sys_path in tools.shadows():
+        checks.append({"check": "PATH: `%s` is %s, not %s (Lasting Plans always uses %s; your shell does not)"
+                       % (name, hit, sys_path, sys_path), "ok": True, "detail": "", "note": True})
     mm = type_mismatches(lib)
     add("stored types match the classifier", not mm,
         "; ".join("%s %s -> %s (`lasting-plans reclassify %s %s`)" % (d.id, d.type, k, d.id, k) for d, k, _ in mm[:5]))
