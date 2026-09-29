@@ -49,10 +49,8 @@ def main():
             staged = open(stamp).read().strip() if os.path.exists(stamp) else None
             st = scheduler.state()
             if not st.get("installed") or staged != __version__:
-                ok, msg = scheduler.install(LIB)
+                ok, msg = scheduler.install(LIB)  # stage_code writes the VERSION stamp
                 if ok:
-                    with open(stamp, "w") as f:
-                        f.write(__version__ + "\n")
                     notes.append(("watcher %s — opt out: lasting-plans scheduler uninstall" % ("installed" if not staged else "updated to " + __version__)))
                 else:
                     notes.append("⚠ watcher NOT installed: %s" % msg)

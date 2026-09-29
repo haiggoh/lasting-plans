@@ -114,6 +114,9 @@ def plan(lib, window_start, window_end, mtimes=None):
             # no usable stated date, but a creation date later than the recovered last
             # edit is impossible: bound it by that edit and say it is only a bound
             ch["created"] = (mt, "upper bound: " + mev)
+        elif metadata.is_no_birthtime_sentinel(cur) and cur_mod:
+            # the 1984 placeholder is no date at all; the last edit is the best honest bound
+            ch["created"] = (cur_mod, "upper bound: last modification (recorded date was the 1984 no-date placeholder)")
         if ch["created"] or ch["modified"]:
             out.append(ch)
     return out

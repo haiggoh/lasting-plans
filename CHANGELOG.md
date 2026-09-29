@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2 — 2026-09-29
+
+- `recover-dates` now also repairs documents that 0.1.0 had already recorded with the
+  1984-01-24 no-date placeholder, giving them their last modification as an upper bound.
+  Search for them with `--since 1984-01-23 --until 1984-01-26`.
+- `scheduler install` now writes the staged-code version stamp itself, so a manual
+  re-install no longer leaves it reporting the old version.
+
 ## 0.1.1 — 2026-09-29
 
 Fixes from the first run against a real plans folder (199 documents).

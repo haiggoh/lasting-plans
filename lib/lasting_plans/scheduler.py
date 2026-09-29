@@ -56,6 +56,9 @@ def stage_code(src_lib):
                 'LP_LIB="%s"\nexport PYTHONPATH="$LP_LIB${PYTHONPATH:+:$PYTHONPATH}"\n'
                 'exec "%s" -m lasting_plans.cli watch "$@"\n' % (os.path.join(dest, "lib"), sys.executable))
     os.chmod(launcher, 0o755)
+    from . import __version__
+    with open(os.path.join(dest, "VERSION"), "w", encoding="utf-8") as f:
+        f.write(__version__ + "\n")  # what the session hook compares to decide on a re-stage
     return launcher
 
 
