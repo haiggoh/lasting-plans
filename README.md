@@ -11,8 +11,9 @@ every plan somewhere the sweep never looks:
 - `~/Claude-playbooks`: playbooks, handbooks, workflows and manuals
 
 Each is its own **local Git repo**, so every revision is kept. Nothing is ever deleted
-when the source copy disappears. It needs no account and no network, and never pushes.
-Local Git history is *not* an off-machine backup; say so to yourself too.
+when the source copy disappears. It needs no account and no network. Local Git history is
+*not* an off-machine backup; for that, add an optional **private** remote
+([Remote backup](#remote-backup-optional)).
 
 ## Install
 
@@ -100,6 +101,41 @@ moves a date *earlier*, never later than the last edit or today. The evidence is
 into `created_source`, the old value and your `--reason` are kept in `date_recovery`, and
 later scans never overwrite a recovered date.
 
+### Folder tags
+
+Finder tags on folders in the plans folder are mirrored onto the same folders in the
+archive (only folders that hold archived documents exist there), recorded in
+`.lasting-plans/folders.json`, and put back by `remote clone`. Like file tags they are
+additive: a tag is never removed from an archive folder.
+
+## Remote backup (optional)
+
+Each archive can have its own **private** Git remote. Nothing is pushed until you set one.
+
+```
+lasting-plans remote create-github plan  you/Claude-plans      # creates it PRIVATE (needs gh)
+lasting-plans remote create-github playbook you/Claude-playbooks
+lasting-plans remote set plan git@host:you/plans.git [--confirm-private]
+lasting-plans remote status [--verify]     # --verify reads the remote's tip now
+lasting-plans remote push [plan|playbook]
+lasting-plans remote off  [plan|playbook]  # keeps the local archive; deletes nothing remotely
+lasting-plans remote clone plan URL        # new machine: clone + re-apply dates and tags
+```
+
+- **Private only.** A GitHub URL is checked with `gh`; a public repo is refused. A URL whose
+  privacy can't be checked needs `--confirm-private`.
+- **Pushed means read back.** After a push the remote's tip is read back and compared with
+  the local commit. Only a match counts as `in sync`. A rejected, failed or offline push is
+  `pending remote`, and `status` exits 5 until it clears.
+- **Never forced.** If the remote moved on (someone else pushed), the push fails and stays
+  pending; resolve it yourself.
+- **Auto push** (`remote_push: auto`, the default once a remote is set): the watcher and
+  `sync` push after each scan that committed something. Nothing is contacted when HEAD
+  already matches the last verified push. `settings set remote_push manual` switches to
+  `remote push` only.
+- It never prompts for credentials (a background job can't answer); use a credential helper
+  or SSH key. The remote is registered as `lasting-plans`, so remotes you added are left alone.
+
 ## CLI
 
 `lasting-plans` on a terminal shows a dashboard and a numbered menu. Each choice echoes
@@ -117,6 +153,7 @@ lasting-plans diff <ref> [REV_A [REV_B]]
 lasting-plans meta <ref> --created D --modified D --tag T | --apply
 lasting-plans reclassify [<ref> plan|playbook]   # no ref: list what the classifier would move
 lasting-plans recover-dates --since D [--until D] [--mtimes TSV] [--apply --reason R]
+lasting-plans remote status|set|create-github|push|off|clone …
 lasting-plans doctor
 lasting-plans settings show|set KEY VALUE|reset KEY
 lasting-plans scheduler install|uninstall|status
@@ -153,7 +190,7 @@ current rule would file differently, and `lasting-plans reclassify <ref> plan|pl
 moves one: it adds it to the other archive and removes it from the first, one commit in
 each, with the same id and a `type_history` entry. A reclassified document stays put.
 
-## Platform support (v0.1)
+## Platform support
 
 | | Import, CLI, Git | Watcher | Birth time / Finder tags |
 |---|---|---|---|
@@ -161,10 +198,14 @@ each, with the same id and a `type_history` entry. A reclassified document stays
 | Linux | preview (untested) | manual: run `lasting-plans watch` | recorded as `unknown` / not applied |
 | Windows | not supported | none | none |
 
-## Not in v0.1
+System tools (`SetFile`, `launchctl`) are always run by absolute path, and extended
+attributes are read through libc rather than any `xattr` program, so a same-named tool on
+your `PATH` (pipx's `xattr`, for one) can't change what Lasting Plans does. `doctor` tells
+you when your PATH has such a shadow.
 
-Remote backup (planned for v0.2, opt-in private remotes only), Waypoints link badges,
-reverse import back into Claude's plans folder, and restore-by-id.
+## Not yet
+
+Waypoints link badges, reverse import back into Claude's plans folder, and restore-by-id.
 
 ## License
 

@@ -515,3 +515,219 @@ def test_stage_code_writes_version_stamp(home, monkeypatch):
     monkeypatch.setattr(scheduler, "install_dir", lambda: str(home / "stage"))
     scheduler.stage_code(os.path.join(ROOT, "lib"))
     assert (home / "stage" / "VERSION").read_text().strip() == __version__
+
+
+# ------------------------------------------------------------------ 0.2.0 remote
+
+def bare(tmp_path, name):
+    p = tmp_path / name
+    subprocess.run(["git", "init", "-q", "--bare", str(p)], check=True)
+    return "file://" + str(p)
+
+
+def test_remote_push_verifies_tip_and_tracks_pending(home, tmp_path):
+    from lasting_plans import remote
+    put(src(home) / "a.md", "# a\n")
+    scan()
+    lib = engine.Library()
+    u = bare(tmp_path, "plans.git")
+    remote.configure(lib, "plan", u)
+    assert remote.summary(lib)["plan"]["state"] == "pending remote"   # configured is not pushed
+    ok, detail = remote.push(lib, "plan")
+    assert ok and "verified" in detail
+    head = gitrepo_head(home / "Claude-plans")
+    assert remote.remote_tip(str(home / "Claude-plans"), remote.branch(str(home / "Claude-plans"))) == head
+    assert remote.summary(lib, verify=True)["plan"]["state"] == "in sync"
+    assert remote.summary(lib)["playbook"]["state"] == "off"
+    put(src(home) / "b.md", "# b\n")
+    scan()
+    s = remote.summary(engine.Library())["plan"]
+    assert s["state"] == "pending remote" and s["unpushed_commits"] == 1
+
+
+def gitrepo_head(root):
+    return git(root, "rev-parse", "HEAD").strip()
+
+
+def test_auto_push_after_sync_and_manual_mode_does_not(home, tmp_path):
+    from lasting_plans import remote
+    put(src(home) / "a.md", "# a\n")
+    scan()
+    remote.configure(engine.Library(), "plan", bare(tmp_path, "p.git"))
+    run_cli(home, "settings", "set", "remote_push", "manual")
+    r = run_cli(home, "sync")
+    assert "remote" not in r.stdout
+    assert remote.summary(engine.Library())["plan"]["state"] == "pending remote"
+    run_cli(home, "settings", "set", "remote_push", "auto")
+    put(src(home) / "b.md", "# b\n")
+    r = run_cli(home, "sync")
+    assert r.returncode == 0 and "remote plan: remote verified" in r.stdout
+    assert remote.summary(engine.Library(), verify=True)["plan"]["state"] == "in sync"
+    r = run_cli(home, "sync")                  # nothing new: no push attempted at all
+    assert "remote" not in r.stdout
+
+
+def test_rejected_push_is_pending_never_forced(home, tmp_path):
+    from lasting_plans import remote
+    put(src(home) / "a.md", "# a\n")
+    scan()
+    lib = engine.Library()
+    u = bare(tmp_path, "p.git")
+    remote.configure(lib, "plan", u)
+    assert remote.push(lib, "plan")[0]
+    # someone else moves the remote on
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", u, str(other)], check=True)
+    (other / "x.md").write_text("foreign")
+    subprocess.run(["git", "-C", str(other), "add", "x.md"], check=True)
+    subprocess.run(["git", "-C", str(other), "commit", "-qm", "foreign"], check=True)
+    subprocess.run(["git", "-C", str(other), "push", "-q"], check=True)
+    foreign = git(other, "rev-parse", "HEAD").strip()
+    put(src(home) / "b.md", "# b\n")
+    scan()
+    ok, detail = remote.push(engine.Library(), "plan")
+    assert not ok
+    assert remote.remote_tip(str(home / "Claude-plans"), remote.branch(str(home / "Claude-plans"))) == foreign
+    assert remote.summary(engine.Library())["plan"]["state"] == "pending remote (last push failed)"
+    r = run_cli(home, "status")
+    assert r.returncode == 5 and "remote push pending" in r.stdout
+
+
+def test_offline_push_is_pending(home, tmp_path):
+    from lasting_plans import remote
+    put(src(home) / "a.md", "# a\n")
+    scan()
+    lib = engine.Library()
+    remote.configure(lib, "plan", bare(tmp_path, "gone.git"))
+    import shutil as _sh
+    _sh.rmtree(tmp_path / "gone.git")
+    ok, _ = remote.push(lib, "plan")
+    assert not ok and remote.summary(engine.Library())["plan"]["state"].startswith("pending")
+    assert remote.summary(engine.Library(), verify=True)["plan"]["state"].startswith("unknown")
+
+
+def test_public_remote_refused_and_unverified_needs_confirm(home, monkeypatch):
+    from lasting_plans import gitrepo, remote
+    scan()
+    lib = engine.Library()
+    monkeypatch.setattr(remote, "privacy", lambda u: ("public", "GitHub reports PUBLIC"))
+    with pytest.raises(gitrepo.GitError, match="private"):
+        remote.configure(lib, "plan", "https://github.com/x/y.git")
+    monkeypatch.setattr(remote, "privacy", lambda u: ("unverified", "not a GitHub URL"))
+    with pytest.raises(gitrepo.GitError, match="confirm-private"):
+        remote.configure(lib, "plan", "https://git.example/y.git")
+    assert not engine.Library().cfg.get("remotes")
+    assert run_cli(home, "settings", "set", "remotes", "{}").returncode == 2
+
+
+def test_clone_on_fresh_home_restores_docs_and_dates(home, tmp_path, monkeypatch):
+    from lasting_plans import remote
+    put(src(home) / "sub" / "a.md", "# a\n\nDate: 2026-08-19\n")
+    scan()
+    lib = engine.Library()
+    u = bare(tmp_path, "p.git")
+    remote.configure(lib, "plan", u)
+    assert remote.push(lib, "plan")[0]
+    want = engine.Library().docs[0].sc["modified_utc"]
+    fresh = tmp_path / "fresh"
+    (fresh / ".claude" / "plans").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(fresh))
+    monkeypatch.setenv("LASTING_PLANS_CONFIG_DIR", str(fresh / ".config"))
+    monkeypatch.setenv("LASTING_PLANS_STATE_DIR", str(fresh / ".state"))
+    n, unapplied = remote.clone(engine.Library(), "plan", u)
+    assert n == 1
+    f = fresh / "Claude-plans" / "sub" / "a.md"
+    assert f.read_text().startswith("# a")
+    assert metadata.utc_iso(os.stat(f).st_mtime) == want              # the clone's checkout time was replaced
+    lib = engine.Library()
+    assert remote.summary(lib)["plan"]["state"] == "in sync"
+    assert scan(). events == [] or all(e[0] != "imported" for e in scan().events)
+
+
+# ------------------------------------------------------------------ 0.2.0 folder tags
+
+@pytest.mark.skipif(not metadata.IS_MAC, reason="Finder tags are macOS only")
+def test_folder_tags_mirror_to_archive_additively(home):
+    put(src(home) / "drafts" / "a.md", "# a\n")
+    assert metadata.write_tags(str(src(home) / "drafts"), ["Rot\n6"])
+    res = scan()
+    arch = home / "Claude-plans" / "drafts"
+    assert "Rot\n6" in metadata.read_tags(str(arch))
+    assert any(e[0] == "metadata" and e[2] == "drafts/" for e in res.events)
+    assert "drafts" in json.loads((home / "Claude-plans" / ".lasting-plans" / "folders.json").read_text())["tags"]
+    assert "folder tags" in git(home / "Claude-plans", "log", "-1", "--format=%s")
+    assert scan().events == []                                   # idempotent
+    metadata.write_tags(str(arch), ["Rot\n6", "Blau\n4"])          # user tags the archive folder too
+    assert metadata.remove_raw_xattr(str(src(home) / "drafts"), metadata.TAGS_ATTR)
+    scan()
+    assert set(metadata.read_tags(str(arch))) >= {"Rot\n6", "Blau\n4"}   # never removed
+    # a tag set only on the archive folder is not recorded, but survives; after a wipe the record restores
+    assert metadata.remove_raw_xattr(str(arch), metadata.TAGS_ATTR)
+    assert engine.apply_folder_tags(str(home / "Claude-plans")) == []
+    assert "Rot\n6" in metadata.read_tags(str(arch))
+
+
+def test_push_that_exits_zero_but_tip_differs_is_not_backed_up(home, tmp_path, monkeypatch):
+    from lasting_plans import remote
+    put(src(home) / "a.md", "# a\n")
+    scan()
+    lib = engine.Library()
+    remote.configure(lib, "plan", bare(tmp_path, "p.git"))
+    monkeypatch.setattr(remote, "remote_tip", lambda root, br, timeout=30: "0" * 40)
+    ok, detail = remote.push(lib, "plan")
+    assert not ok and "remote reports" in detail
+    assert remote.summary(engine.Library())["plan"]["state"] != "in sync"
+
+
+@pytest.mark.skipif(not metadata.IS_MAC, reason="Finder tags are macOS only")
+def test_folder_tag_record_is_a_union_across_source_changes(home):
+    put(src(home) / "drafts" / "a.md", "# a\n")
+    metadata.write_tags(str(src(home) / "drafts"), ["Rot\n6"])
+    scan()
+    assert metadata.remove_raw_xattr(str(src(home) / "drafts"), metadata.TAGS_ATTR)
+    metadata.write_tags(str(src(home) / "drafts"), ["Grün\n2"])
+    scan()
+    rec = engine.load_folder_tags(str(home / "Claude-plans"))["drafts"]
+    assert rec == ["Rot\n6", "Grün\n2"]
+
+
+# ------------------------------------------------------------------ tool resolution guard
+
+def test_no_module_runs_a_system_tool_by_bare_name():
+    """Every external program goes through tools.py. A bare "xattr"/"SetFile"/"launchctl"
+    in a subprocess argv or shutil.which() elsewhere resolves via PATH, where pipx's xattr
+    (or any shim) silently replaces the system one."""
+    import ast
+    import glob
+    from lasting_plans import tools
+    names = set(tools.SYSTEM)
+    bad = []
+    files = glob.glob(os.path.join(ROOT, "lib", "lasting_plans", "*.py")) + glob.glob(os.path.join(ROOT, "hooks", "*.py")) + [BIN]
+    for f in files:
+        if f.endswith("tools.py"):
+            continue
+        tree = ast.parse(open(f, encoding="utf-8").read(), f)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                fn = ast.unparse(node.func)
+                if fn in ("shutil.which", "which") and node.args and isinstance(node.args[0], ast.Constant):
+                    bad.append("%s:%d which(%r) — use tools.system/on_path" % (os.path.basename(f), node.lineno, node.args[0].value))
+                if fn.startswith("subprocess.") and node.args and isinstance(node.args[0], (ast.List, ast.Tuple)):
+                    first = node.args[0].elts[0] if node.args[0].elts else None
+                    if isinstance(first, ast.Constant) and (first.value in names or os.path.basename(str(first.value)) in names):
+                        bad.append("%s:%d runs %r directly — use tools.system()" % (os.path.basename(f), node.lineno, first.value))
+    assert not bad, "\n".join(bad)
+
+
+def test_tools_system_paths_are_absolute_and_path_is_ignored(tmp_path, monkeypatch):
+    from lasting_plans import tools
+    fake = tmp_path / "xattr"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    assert all(os.path.isabs(p) for p in tools.SYSTEM.values())
+    if tools.IS_MAC and os.path.exists("/usr/bin/xattr"):
+        assert tools.system("xattr") == "/usr/bin/xattr"
+        assert ("xattr", str(fake), "/usr/bin/xattr") in tools.shadows()
+    with pytest.raises(ValueError):
+        tools.on_path("xattr")

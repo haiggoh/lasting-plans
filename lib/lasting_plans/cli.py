@@ -10,7 +10,7 @@ import sys
 
 from . import PREFIX, __version__
 from . import config as cfgmod
-from . import engine, gitrepo, metadata, scheduler
+from . import engine, gitrepo, metadata, remote, scheduler
 
 LIB_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -60,8 +60,16 @@ def cmd_status(args):
         "  kept after the source copy was swept: %d" % st["kept_after_source_gone"],
         "  watcher: %s" % watch,
         "  last scan: %s" % (lr.get("finished_utc") or "never"),
-        "  remote backup: off (local Git only — not an off-machine copy)",
     ]
+    rs = remote.summary(lib)
+    st["remote"] = rs
+    if all(v["state"] == "off" for v in rs.values()):
+        lines.append("  remote backup: off (local Git only — not an off-machine copy)")
+    else:
+        for k, v in rs.items():
+            when = (" at %s, %s" % ((v.get("last_pushed_sha") or "")[:10], v.get("pushed_utc"))) if v.get("pushed_utc") else ""
+            lines.append("  remote %-9s %s%s%s" % (k + ":", v["state"], when,
+                         (" (%s push)" % v["mode"]) if v.get("mode") else ""))
     bad = False
     if st["unprotected"]:
         bad = True
@@ -73,6 +81,9 @@ def cmd_status(args):
     if st["corrupt_sidecars"]:
         bad = True
         lines.append("  ⚠ corrupt sidecar(s): %d" % len(st["corrupt_sidecars"]))
+    if any(v["state"].startswith("pending") for v in rs.values()):
+        bad = True
+        lines.append("  ⚠ remote push pending — `lasting-plans remote status --verify`")
     if not bad:
         lines.append("  ✓ every source document has a lasting copy")
     out(args, "\n".join(lines), st)
@@ -103,8 +114,13 @@ def cmd_sync(args):
         lines.append("  ⏳ %s — %s" % (p, r))
     for p, r in res.errors:
         lines.append("  ✗ %s — %s" % (p, r))
-    out(args, "\n".join(lines), res.as_json())
-    return 5 if (res.pending or res.errors) else 0
+    data = res.as_json()
+    pushes = [] if getattr(args, "no_push", False) else remote.auto_push(lib)
+    for kind, ok, detail in pushes:
+        lines.append("  %s remote %s: %s" % ("☁" if ok else "⏳", kind, detail))
+    data["remote"] = [{"archive": k, "ok": ok, "detail": d} for k, ok, d in pushes]
+    out(args, "\n".join(lines), data)
+    return 5 if (res.pending or res.errors or any(not ok for _, ok, _ in pushes)) else 0
 
 
 def _doc_line(d, src):
@@ -266,6 +282,63 @@ def cmd_recover_dates(args):
     return 0
 
 
+def cmd_remote(args):
+    lib = engine.Library()
+    kinds = [args.archive] if args.archive in ("plan", "playbook") else list(lib.roots)
+    if args.action == "status":
+        rs = remote.summary(lib, verify=args.verify)
+        lines = ["%s remote%s" % (PREFIX, "" if args.verify else " (last verified push; --verify asks the remote)")]
+        for k in kinds:
+            v = rs[k]
+            lines.append("  %-9s %s" % (k, v["state"]))
+            for f in ("url", "mode", "privacy", "local_head", "last_pushed_sha", "pushed_utc", "remote_tip",
+                      "unpushed_commits", "last_error", "verify_error"):
+                if v.get(f):
+                    lines.append("      %-16s %s" % (f, v[f]))
+        out(args, "\n".join(lines), rs)
+        return 5 if any(rs[k]["state"].startswith(("pending", "unknown")) for k in kinds) else 0
+    if args.action == "set":
+        if args.archive not in ("plan", "playbook") or not args.url:
+            print("usage: lasting-plans remote set plan|playbook URL [--confirm-private]", file=sys.stderr)
+            return 2
+        verdict, detail = remote.configure(lib, args.archive, args.url, args.confirm_private)
+        print("%s: %s archive -> %s (%s: %s). Nothing pushed yet; `lasting-plans remote push`." % (
+            PREFIX, args.archive, remote._redact(args.url), verdict, detail))
+        return 0
+    if args.action == "create-github":
+        if args.archive not in ("plan", "playbook") or not args.url:
+            print("usage: lasting-plans remote create-github plan|playbook OWNER/NAME", file=sys.stderr)
+            return 2
+        owner, _, name = args.url.partition("/")
+        u, how = remote.create_github(owner, name)
+        remote.configure(lib, args.archive, u)
+        print("%s: %s %s, set as the %s archive's remote. Nothing pushed yet." % (PREFIX, args.url, how, args.archive))
+        return 0
+    if args.action == "off":
+        for k in kinds:
+            remote.disable(lib, k)
+        print("%s: remote off for %s; local archives untouched, nothing deleted remotely" % (PREFIX, ", ".join(kinds)))
+        return 0
+    if args.action == "push":
+        rc = 0
+        for k in kinds:
+            if not remote.url(lib.cfg, k):
+                continue
+            ok, detail = remote.push(lib, k)
+            print("%s: %s %s — %s" % (PREFIX, "☁" if ok else "⏳ PENDING", k, detail))
+            rc = rc or (0 if ok else 5)
+        return rc
+    if args.action == "clone":
+        if args.archive not in ("plan", "playbook") or not args.url:
+            print("usage: lasting-plans remote clone plan|playbook URL", file=sys.stderr)
+            return 2
+        n, unapplied = remote.clone(lib, args.archive, args.url, args.confirm_private)
+        print("%s: cloned %d document(s) into %s; dates/tags re-applied%s" % (
+            PREFIX, n, lib.roots[args.archive], (" except %d file(s) — see `meta --apply`" % len(unapplied)) if unapplied else ""))
+        return 0
+    return 2
+
+
 def cmd_doctor(args):
     lib = engine.Library()
     checks = engine.doctor(lib)
@@ -275,7 +348,7 @@ def cmd_doctor(args):
     lr = engine.last_run() or {}
     for p in lr.get("pending_items", []) + lr.get("error_items", []):
         checks.append({"check": "last scan: %s" % p["path"], "ok": False, "detail": p["reason"]})
-    human = "\n".join(["%s doctor" % PREFIX] + ["  %s %s%s" % ("✓" if c["ok"] else "✗", c["check"], ("  — " + c["detail"]) if c["detail"] and not c["ok"] else "") for c in checks])
+    human = "\n".join(["%s doctor" % PREFIX] + ["  %s %s%s" % ("ℹ" if c.get("note") else "✓" if c["ok"] else "✗", c["check"], ("  — " + c["detail"]) if c["detail"] and not c["ok"] else "") for c in checks])
     out(args, human, {"checks": checks})
     return 0 if all(c["ok"] for c in checks) else 5
 
@@ -333,7 +406,7 @@ def cmd_setup(args):
     lib = engine.Library()
     for t, how in engine.prepare_roots(lib).items():
         print("  %s archive %s: %s" % (t, lib.roots[t], how))
-    rc = cmd_sync(argparse.Namespace(json=False, verbose=False))
+    rc = cmd_sync(argparse.Namespace(json=False, verbose=False, no_push=False))
     cfg = cfgmod.load()
     if args.no_scheduler or not cfg["scheduler_enabled"]:
         print("  watcher: not installed (%s)" % ("--no-scheduler" if args.no_scheduler else "scheduler_enabled=false"))
@@ -355,6 +428,7 @@ MENU = [
     ("history", "History of a document", ["ref"]),
     ("diff", "Diff latest change of a document", ["ref"]),
     ("doctor", "Doctor (health checks)", []),
+    ("remote status", "Remote backup status", []),
     ("settings show", "Show settings", []),
     ("scheduler status", "Watcher status", []),
 ]
@@ -411,8 +485,9 @@ def build_parser():
         return s
 
     add("status", cmd_status, "dashboard: what is protected, what is not, watcher state")
-    s = add("sync", cmd_sync, "scan the source and archives once and commit changes")
+    s = add("sync", cmd_sync, "scan the source and archives once and commit changes (and auto-push, if on)")
     s.add_argument("-v", "--verbose", action="store_true")
+    s.add_argument("--no-push", action="store_true", help="skip the remote push this time")
     s = add("list", cmd_list, "list archived documents")
     s.add_argument("--type", choices=["plan", "playbook"])
     s.add_argument("--limit", type=int, default=50)
@@ -450,6 +525,12 @@ def build_parser():
     s.add_argument("--apply", action="store_true", help="write the dates (default: show what would change)")
     s.add_argument("--reason", help="what lost the dates; recorded in each sidecar (required with --apply)")
     s.add_argument("-v", "--verbose", action="store_true")
+    s = add("remote", cmd_remote, "optional PRIVATE off-machine copy: status [--verify] | set | create-github | push | off | clone")
+    s.add_argument("action", choices=["status", "set", "create-github", "push", "off", "clone"])
+    s.add_argument("archive", nargs="?", choices=["plan", "playbook", "all"])
+    s.add_argument("url", nargs="?", help="Git URL (set/clone) or OWNER/NAME (create-github)")
+    s.add_argument("--verify", action="store_true", help="status: read the remote's tip now (network)")
+    s.add_argument("--confirm-private", action="store_true", help="accept a non-GitHub URL whose privacy cannot be checked")
     add("doctor", cmd_doctor, "health checks, including last scan's pending items")
     s = add("settings", cmd_settings, "show / set / reset settings")
     s.add_argument("action", choices=["show", "set", "reset"])

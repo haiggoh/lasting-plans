@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 from . import config as cfgmod
+from . import tools
 
 LABEL = "com.haiggoh.lasting-plans"
 
@@ -32,13 +33,13 @@ def _uid_domain():
 
 def _launchctl(*args):
     try:
-        return subprocess.run(["launchctl"] + list(args), capture_output=True, text=True, timeout=20)
+        return subprocess.run([tools.system("launchctl") or "/bin/launchctl"] + list(args), capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.SubprocessError) as e:
         return subprocess.CompletedProcess(args, 1, "", str(e))
 
 
 def supported():
-    return sys.platform == "darwin" and shutil.which("launchctl") is not None
+    return sys.platform == "darwin" and tools.system("launchctl") is not None
 
 
 def stage_code(src_lib):
