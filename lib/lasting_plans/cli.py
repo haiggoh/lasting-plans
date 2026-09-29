@@ -10,7 +10,7 @@ import sys
 
 from . import PREFIX, __version__
 from . import config as cfgmod
-from . import engine, gitrepo, scheduler
+from . import engine, gitrepo, metadata, scheduler
 
 LIB_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -200,6 +200,72 @@ def cmd_meta(args):
     return 5 if failed else 0
 
 
+def cmd_reclassify(args):
+    lib = engine.Library()
+    if not args.ref:
+        mm = engine.type_mismatches(lib)
+        human = "\n".join(["%s: %d document(s) the classifier would file differently" % (PREFIX, len(mm))] +
+                          ["  %s  %s -> %s  %s  (%s)" % (d.id, d.type, k, d.sc["archive_relpath"], r) for d, k, r in mm])
+        out(args, human, {"mismatches": [{"id": d.id, "type": d.type, "suggested": k, "reason": r,
+                                          "path": d.sc["archive_relpath"]} for d, k, r in mm]})
+        return 0
+    d = _one(lib, args.ref)
+    if not args.type:
+        print("usage: lasting-plans reclassify REF {plan,playbook}", file=sys.stderr)
+        return 2
+    try:
+        rel, a, b = engine.reclassify(lib, d, args.type)
+    except ValueError as e:
+        print("%s: %s" % (PREFIX, e), file=sys.stderr)
+        return 2
+    except engine.Busy:
+        print("%s: a scan is running; try again in a moment" % PREFIX, file=sys.stderr)
+        return 5
+    out(args, "%s: %s is now a %s\n  %s\n  commits: %s (added), %s (removed from the %s archive)" % (
+        PREFIX, d.id, args.type, os.path.join(lib.roots[args.type], rel), (a or "")[:10], (b or "")[:10], d.type),
+        {"id": d.id, "type": args.type, "path": rel, "commit_added": a, "commit_removed": b})
+    return 0
+
+
+def cmd_recover_dates(args):
+    from . import recover
+    lib = engine.Library()
+    try:
+        start = metadata.parse_iso(args.since)
+        end = metadata.parse_iso(args.until) if args.until else start + 86400
+    except ValueError as e:
+        print("%s: bad date: %s" % (PREFIX, e), file=sys.stderr)
+        return 2
+    mtimes = recover.load_mtimes(args.mtimes) if args.mtimes else {}
+    changes = recover.plan(lib, start, end, mtimes)
+    lines = ["%s recover-dates: %d document(s) with a recorded creation date in [%s, %s) or none%s" % (
+        PREFIX, len(changes), metadata.utc_iso(start), metadata.utc_iso(end), "" if args.apply else " — DRY RUN, nothing written")]
+    for ch in changes[: None if args.verbose else 20]:
+        sc = ch["doc"].sc
+        lines.append("  %s  %s" % (ch["doc"].id, sc["archive_relpath"]))
+        if ch["created"]:
+            lines.append("      created  %s -> %s  (%s)" % ((sc.get("created_utc") or "unknown")[:16], metadata.utc_iso(ch["created"][0])[:16], ch["created"][1]))
+        if ch["modified"]:
+            lines.append("      modified %s -> %s  (%s)" % ((sc.get("modified_utc") or "unknown")[:16], metadata.utc_iso(ch["modified"][0])[:16], ch["modified"][1]))
+    if not args.verbose and len(changes) > 20:
+        lines.append("  … %d more (-v)" % (len(changes) - 20))
+    data = {"changes": [{"id": c["doc"].id, "path": c["doc"].sc["archive_relpath"],
+                         "created": c["created"] and {"utc": metadata.utc_iso(c["created"][0]), "evidence": c["created"][1]},
+                         "modified": c["modified"] and {"utc": metadata.utc_iso(c["modified"][0]), "evidence": c["modified"][1]}}
+                        for c in changes]}
+    if args.apply and changes:
+        if not args.reason:
+            print("%s: --apply needs --reason \"what lost the dates\" (it is recorded in every sidecar)" % PREFIX, file=sys.stderr)
+            return 2
+        shas, failed = recover.apply(changes, args.reason)
+        lines.append("  recorded; commits: %s" % ", ".join("%s %s" % (os.path.basename(r), (s or "none")[:10]) for r, s in shas.items()))
+        for rel, bad in failed:
+            lines.append("  ⚠ %s: could not apply %s to the file (kept in the sidecar)" % (rel, ", ".join(bad)))
+        data.update(commits=shas, unapplied=failed)
+    out(args, "\n".join(lines), data)
+    return 0
+
+
 def cmd_doctor(args):
     lib = engine.Library()
     checks = engine.doctor(lib)
@@ -371,6 +437,19 @@ def build_parser():
     s.add_argument("--modified")
     s.add_argument("--tag", action="append", help="Finder tag to ADD (repeatable; never removes)")
     s.add_argument("--apply", action="store_true", help="re-apply recorded metadata (e.g. after a clone)")
+    s = add("reclassify", cmd_reclassify, "move a document between the plan and playbook archives "
+            "(no REF: list documents the classifier would now file differently)")
+    s.add_argument("ref", nargs="?")
+    s.add_argument("type", nargs="?", choices=["plan", "playbook"])
+    s = add("recover-dates", cmd_recover_dates,
+            "after a DOCUMENTED loss of file dates, recover them from backup mtimes and the dates "
+            "written in each document (dry run unless --apply)")
+    s.add_argument("--since", required=True, help="start of the loss window: documents whose recorded creation date is in it (or unknown)")
+    s.add_argument("--until", help="end of the window (default: --since + 1 day)")
+    s.add_argument("--mtimes", help="recovery TSV: verdict, path, current_mtime, backup_mtime (only 'exact' rows used)")
+    s.add_argument("--apply", action="store_true", help="write the dates (default: show what would change)")
+    s.add_argument("--reason", help="what lost the dates; recorded in each sidecar (required with --apply)")
+    s.add_argument("-v", "--verbose", action="store_true")
     add("doctor", cmd_doctor, "health checks, including last scan's pending items")
     s = add("settings", cmd_settings, "show / set / reset settings")
     s.add_argument("action", choices=["show", "set", "reset"])

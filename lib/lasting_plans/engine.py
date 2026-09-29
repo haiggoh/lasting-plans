@@ -222,10 +222,17 @@ def _atomic_copy_bytes(data, dest):
         raise OSError("hash mismatch after copy to %s" % dest)
 
 
+def _created_pinned(sc):
+    """A creation date set by the user or recovered after a documented loss is never
+    overwritten by what the filesystem reports later."""
+    s = sc.get("created_source") or ""
+    return s == "user" or s.startswith("recovered")
+
+
 def _record_meta(sc, src_path):
     obs = metadata.observe(src_path)
     sc["modified_utc"] = obs["modified_utc"]
-    if sc.get("created_source") != "user":
+    if not _created_pinned(sc):
         sc["created_utc"] = obs["created_utc"]
         sc["created_source"] = obs["created_source"]
     tags = list(sc.get("tags") or [])
@@ -619,6 +626,54 @@ def set_metadata(doc, created=None, modified=None, add_tags=None):
     return failed, sha
 
 
+def type_mismatches(lib):
+    """[(doc, new_type, reason)] where today's classifier disagrees with the stored type.
+    Reported only; a document changes archive solely through `reclassify`."""
+    out = []
+    for d in lib.docs:
+        if d.sc.get("origin") != "source" or d.sc.get("type_reason") == "reclassified by user":
+            continue
+        rel = d.sc.get("source_relpath") or d.sc["archive_relpath"]
+        if not os.path.exists(d.path):
+            continue
+        with open(d.path, encoding="utf-8", errors="replace") as f:
+            kind, reason = classify_mod.classify(rel, f.read(), lib.cfg.get("classify_overrides"))
+        if kind != d.type:
+            out.append((d, kind, reason))
+    return out
+
+
+def reclassify(lib, doc, new_type):
+    """Move one document (and its sidecar) to the other archive: an add commit in the
+    destination, then a removal commit in the origin. Returns (dest_rel, sha_add, sha_rm)."""
+    if new_type == doc.type:
+        raise ValueError("%s is already a %s" % (doc.sc["archive_relpath"], new_type))
+    for r in (doc.root, lib.roots[new_type]):
+        if not gitrepo.has_identity(r):
+            raise gitrepo.GitError("%s has no Git identity; nothing moved" % r)
+    with scan_lock():
+        src_root, dst_root = doc.root, lib.roots[new_type]
+        old_rel = doc.sc["archive_relpath"]
+        taken = {d.sc["archive_relpath"] for d in lib.docs if d.root == dst_root}
+        new_rel = _free_relpath(dst_root, old_rel, taken)
+        with open(doc.path, "rb") as f:
+            data = f.read()
+        _atomic_copy_bytes(data, os.path.join(dst_root, new_rel))
+        sc = dict(doc.sc)
+        sc.update(archive_relpath=new_rel, type=new_type, type_reason="reclassified by user")
+        sc.setdefault("type_history", []).append({"from": doc.type, "to": new_type, "at_utc": now_utc()})
+        write_sidecar(dst_root, sc)
+        _apply_sidecar_meta(os.path.join(dst_root, new_rel), sc)
+        sha_add = gitrepo.commit_paths(dst_root, [new_rel, sidecar_rel(sc["id"])],
+                                       "reclassify: %s (from %s archive)" % (new_rel, doc.type))
+        os.remove(doc.path)
+        os.remove(os.path.join(src_root, sidecar_rel(doc.id)))
+        sha_rm = gitrepo.commit_paths(src_root, [old_rel, sidecar_rel(doc.id)],
+                                      "reclassify: %s moved to the %s archive" % (old_rel, new_type))
+    lib.reload()
+    return new_rel, sha_add, sha_rm
+
+
 def apply_metadata(doc):
     """Re-apply recorded dates/tags to the archive file (e.g. after a fresh git clone)."""
     if not os.path.exists(doc.path):
@@ -646,4 +701,7 @@ def doctor(lib):
     add("every archive document present", not miss, ", ".join(miss[:5]))
     st = status(lib)
     add("every source document protected", not st["unprotected"], "%d unprotected" % len(st["unprotected"]))
+    mm = type_mismatches(lib)
+    add("stored types match the classifier", not mm,
+        "; ".join("%s %s -> %s (`lasting-plans reclassify %s %s`)" % (d.id, d.type, k, d.id, k) for d, k, _ in mm[:5]))
     return checks

@@ -67,6 +67,19 @@ def kinds(res):
     ("manual-installation-plan.md", "", "plan"),          # adjective: stays a plan
     ("x.md", "Manual testing of the login flow", "plan"),  # adjective in H1
     ("x.md", "Plan — refactor", "plan"),
+    # the leading/trailing noun decides; a mid-sentence mention does not (0.1.1)
+    ("Execution plan — X_ plan and playbook preservation.md", "Execution plan — X", "plan"),
+    ("DECISION-LEDGER-playbook-decomposition.md", "", "plan"),
+    ("x.md", "Making a Repo Portable — Playbook", "playbook"),
+    ("Playbook_AI-Targeted_Execution_Plan_v4.md", "", "playbook"),
+    ("x.md", "Release Playbook (v2)", "playbook"),
+    ("Workflow — Feature Branches and Checkpoints.md", "", "playbook"),
+    ("x.md", "Workflow: shipping a plugin", "playbook"),
+    ("x.md", "Plugin Release Workflow", "playbook"),
+    ("workflow-fix-plan.md", "", "plan"),                  # adjective, like manual-installation
+    ("x.md", "Fix the CI workflow cache", "plan"),
+    ("_PLAYBOOKS/notes.md", "", "playbook"),               # a playbook folder decides
+    ("drafts/notes.md", "", "plan"),
 ])
 def test_classify(name, h1, want):
     text = ("# %s\n\nbody mentions playbook many times\n" % h1) if h1 else "no heading, playbook in body\n"
@@ -383,3 +396,102 @@ def test_watch_once_imports(home):
     r = run_cli(home, "watch", "--once")
     assert r.returncode == 0 and "imported" in r.stdout
     assert (home / "Claude-plans" / "a.md").exists()
+
+
+# ------------------------------------------------------------------ 0.1.1
+
+def test_1984_birthtime_sentinel_is_unknown(monkeypatch, tmp_path):
+    f = tmp_path / "a.md"
+    f.write_text("x")
+    real = os.stat
+
+    class St:
+        def __init__(self, s):
+            self._s = s
+            self.st_birthtime = 443779200.0  # 1984-01-24 09:00 CET: the no-date placeholder
+
+        def __getattr__(self, k):
+            return getattr(self._s, k)
+
+    monkeypatch.setattr(metadata.os, "stat", lambda p, *a, **k: St(real(p, *a, **k)))
+    obs = metadata.observe(str(f))
+    assert obs["created_utc"] is None and obs["created_source"].startswith("unknown")
+    assert metadata.is_no_birthtime_sentinel(443779200.0)
+    assert not metadata.is_no_birthtime_sentinel(1759000000.0)
+
+
+def test_reclassify_moves_between_archives_and_doctor_reports(home):
+    put(src(home) / "x.md", "# Plan and playbook preservation\n")
+    scan()
+    lib = engine.Library()
+    d = lib.resolve("x.md")[0]
+    assert d.type == "plan"
+    rel, a, b = engine.reclassify(lib, d, "playbook")
+    assert a and b
+    assert (home / "Claude-playbooks" / "x.md").exists() and not (home / "Claude-plans" / "x.md").exists()
+    assert "reclassify" in git(home / "Claude-plans", "log", "-1", "--format=%s")
+    lib = engine.Library()
+    assert [x.type for x in lib.docs] == ["playbook"]
+    assert not engine.type_mismatches(lib)  # a user reclassification is final
+    assert scan().events == []              # the next scan neither re-imports nor moves it back
+
+
+def test_type_mismatch_is_reported_not_moved(home):
+    put(src(home) / "x.md", "# notes\n")
+    scan()
+    lib = engine.Library()
+    d = lib.docs[0]
+    d.sc["type_reason"] = "old rule"
+    engine.write_sidecar(d.root, d.sc)
+    # pretend an older classifier filed it as a playbook
+    engine.reclassify(lib, d, "playbook")
+    lib = engine.Library()
+    d = lib.docs[0]
+    d.sc["type_reason"] = "filename matched playbook/handbook"
+    engine.write_sidecar(d.root, d.sc)
+    mm = engine.type_mismatches(engine.Library())
+    assert [(x.type, k) for x, k, _ in mm] == [("playbook", "plan")]
+    scan()
+    assert engine.Library().docs[0].type == "playbook"
+
+
+def test_recover_dates_from_text_and_mtimes(home, tmp_path):
+    from lasting_plans import recover
+    put(src(home) / "a.md", "# A\n\n**Date:** 2026-08-19\n")
+    put(src(home) / "b 2026-07-02.md", "# B\n")
+    put(src(home) / "c.md", "# C\n")                              # no date anywhere
+    put(src(home) / "d.md", "# D\n\nCreated: 2099-01-01\n")       # impossible: in the future
+    scan()
+    lib = engine.Library()
+    tsv = tmp_path / "m.tsv"
+    tsv.write_text("verdict\tpath\tcurrent_mtime\tbackup_mtime\tarchive\n"
+                   "exact\tc.md\tx\t2026-08-01 10:00\tcm\n"
+                   "edited-after\ta.md\tx\t2026-01-01 10:00\tcm\n")
+    now = time.time()
+    ch = {c["doc"].sc["archive_relpath"]: c for c in recover.plan(lib, now - 7200, now + 60, recover.load_mtimes(str(tsv)))}
+    assert "labelled" in ch["a.md"]["created"][1] and metadata.utc_iso(ch["a.md"]["created"][0]).startswith("2026-08-1")
+    assert ch["a.md"]["modified"] is None                             # only 'exact' rows count
+    assert "file name" in ch["b 2026-07-02.md"]["created"][1]
+    assert ch["c.md"]["created"][1].startswith("upper bound") and ch["c.md"]["modified"]
+    assert "d.md" not in ch                                           # never moves a date LATER
+    shas, failed = recover.apply(list(ch.values()), "fixture loss")
+    assert all(shas.values())
+    sc = engine.Library().resolve("a.md")[0].sc
+    assert sc["created_source"].startswith("recovered") and sc["date_recovery"][0]["reason"] == "fixture loss"
+    # a later source EDIT re-reads the filesystem; it must not overwrite a recovered date
+    put(src(home) / "a.md", "# A\n\n**Date:** 2026-08-19\n\nedited\n")
+    assert "updated" in kinds(scan())
+    assert engine.Library().resolve("a.md")[0].sc["created_utc"] == sc["created_utc"]
+    assert recover.plan(engine.Library(), now - 7200, now + 60) == [] or all(
+        c["doc"].sc["archive_relpath"] == "d.md" for c in recover.plan(engine.Library(), now - 7200, now + 60))
+
+
+def test_recover_dates_cli_is_dry_run_by_default(home):
+    put(src(home) / "a.md", "# A\n\nDate: 2026-08-19\n")
+    scan()
+    before = git(home / "Claude-plans", "rev-parse", "HEAD")
+    r = run_cli(home, "recover-dates", "--since", "2000-01-01", "--until", "2100-01-01")
+    assert r.returncode == 0 and "DRY RUN" in r.stdout and "labelled" in r.stdout
+    assert git(home / "Claude-plans", "rev-parse", "HEAD") == before
+    r = run_cli(home, "recover-dates", "--since", "2000-01-01", "--until", "2100-01-01", "--apply")
+    assert r.returncode == 2                                          # --reason is required

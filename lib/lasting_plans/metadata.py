@@ -21,6 +21,18 @@ def utc_iso(ts):
     return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# 1984-01-24 00:00 local time (the Macintosh launch date) is what Finder/HFS tools write
+# when a file has no creation date; stored as-is it would read as a real, very old date.
+_SENTINEL_DAY = datetime.date(1984, 1, 24)
+
+
+def is_no_birthtime_sentinel(ts):
+    if ts is None or ts <= 0:
+        return ts is not None
+    return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).date() in (
+        _SENTINEL_DAY - datetime.timedelta(days=1), _SENTINEL_DAY)
+
+
 def parse_iso(s):
     s = s.strip().replace("Z", "+00:00")
     if len(s) == 10:
@@ -103,10 +115,15 @@ def observe(path):
     """Snapshot of what the filesystem can tell us, with provenance."""
     st = os.stat(path)
     birth = getattr(st, "st_birthtime", None)
+    source = "filesystem birthtime"
+    if birth is None:
+        source = "unknown"
+    elif is_no_birthtime_sentinel(birth):
+        birth, source = None, "unknown (filesystem reports the 1984-01-24 no-date placeholder)"
     snap = {
         "modified_utc": utc_iso(st.st_mtime),
         "created_utc": utc_iso(birth),
-        "created_source": "filesystem birthtime" if birth is not None else "unknown",
+        "created_source": source,
         "tags": read_tags(path) if IS_MAC else [],
         "tags_source": "finder xattr" if IS_MAC else "unsupported on this platform",
     }
