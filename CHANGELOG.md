@@ -19,7 +19,6 @@ Fixes from the first run against a real plans folder (199 documents).
   dates earlier, is a dry run unless `--apply --reason`, and records the evidence.
   Recovered dates are never overwritten by later scans.
 - The 1984-01-24 no-creation-date placeholder is recorded as `unknown`, not as a date.
-- `watch --max-seconds` is honoured while idle. It used to sleep out the full 900 s interval.
 
 ## 0.1.0 — 2026-09-28
 
