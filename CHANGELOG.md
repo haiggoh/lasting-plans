@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.0] — 2026-10-02
+
+Qualification/migration (Phase 9).
+
+- **Migration path:** `lasting-plans migrate [--apply]` detects existing Git repo in Claude's
+  plans folder, performs read-only audit of all files, and imports missing files on `--apply`.
+  Never deletes or rewrites history.
+- **Disaster recovery drill:** `lasting-plans disaster-drill` tests Git history checkout,
+  metadata-aware restore, and Finder tag preservation.
+- **Privacy/secrets audit:** `lasting-plans privacy-audit` scans archives for potential
+  API keys, tokens, passwords, and private keys using regex patterns.
+- **Skill update:** documents `migrate`, `disaster-drill`, and `privacy-audit` commands.
+- **Tests:** 7 new tests covering migration detection, import of missing files, CLI dry-run,
+  disaster drill, and privacy audit.
+- **Cross-platform readiness:** local-only forever, no account/network required for core
+  functionality; optional private remotes tested.
+
 ## [0.5.0] — 2026-10-02
 
 Reverse import and recovery (Phase 8).

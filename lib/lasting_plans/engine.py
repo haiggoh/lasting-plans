@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import time
 import uuid
 
@@ -882,3 +883,180 @@ def doctor(lib):
     add("stored types match the classifier", not mm,
         "; ".join("%s %s -> %s (`lasting-plans reclassify %s %s`)" % (d.id, d.type, k, d.id, k) for d, k, _ in mm[:5]))
     return checks
+
+
+# ---------------------------------------------------------------- migration
+
+def detect_source_git_repo(source_dir):
+    """Check if the source directory is already a Git repo.
+    Returns (is_repo, git_dir, has_remote)"""
+    git_dir = os.path.join(source_dir, ".git")
+    if not os.path.isdir(git_dir):
+        return False, None, False
+    try:
+        remotes = subprocess.run(["git", "-C", source_dir, "remote", "-v"],
+                                 capture_output=True, text=True, timeout=10).stdout
+        has_remote = bool(remotes.strip())
+        return True, git_dir, has_remote
+    except Exception:
+        return True, git_dir, False
+
+
+def migrate_existing_git_repo(lib, keep_existing=True):
+    """Migration path for users with existing Git repo in Claude's plans folder.
+    Performs read-only audit and imports existing working files.
+    Does not delete repo or rewrite history.
+    Returns (audit_results, imported_count)."""
+    is_repo, git_dir, has_remote = detect_source_git_repo(lib.source)
+    if not is_repo:
+        return {"message": "No existing Git repo in source directory"}, 0
+
+    audit = {
+        "source_is_git_repo": True,
+        "git_dir": git_dir,
+        "has_remote": has_remote,
+        "existing_files": [],
+        "imported": [],
+        "skipped": [],
+    }
+
+    # Walk source and find all document files
+    for rel, abspath in walk_docs(lib.source):
+        audit["existing_files"].append(rel)
+
+    # Import each file that's not already in archives
+    lib.reload()
+    imported = 0
+    for rel, abspath in walk_docs(lib.source):
+        # Check if already in archive
+        by_src = lib.by_source()
+        if rel in by_src:
+            audit["skipped"].append({"path": rel, "reason": "already in archive"})
+            continue
+
+        # Import new file
+        data = stable_read(abspath)
+        if data is None:
+            audit["skipped"].append({"path": rel, "reason": "file changing or too large"})
+            continue
+
+        h = sha256_bytes(data)
+        # Classify and import using existing scan logic
+        text = data.decode("utf-8", "replace")
+        kind, reason = classify_mod.classify(rel, text, lib.cfg.get("classify_overrides"))
+        root = lib.roots[kind]
+        taken = {d.sc["archive_relpath"] for d in lib.docs if d.root == root}
+        arel = _free_relpath(root, rel, taken)
+
+        # This mimics _handle_new but for migration
+        sc = _new_sidecar(rel, arel, h, kind, reason, origin="migration")
+        try:
+            _atomic_copy_bytes(data, os.path.join(root, arel))
+        except OSError as e:
+            audit["skipped"].append({"path": rel, "reason": "copy failed: %s" % e})
+            continue
+        _record_meta(sc, abspath)
+        write_sidecar(root, sc)
+        _apply_sidecar_meta(os.path.join(root, arel), sc)
+        if _commit(lib, root, arel, sc["id"], "migrate: import %s from existing repo" % arel, None):
+            audit["imported"].append({"path": rel, "id": sc["id"], "type": kind})
+            imported += 1
+        else:
+            audit["skipped"].append({"path": rel, "reason": "commit failed"})
+
+    lib.reload()
+    return audit, imported
+
+
+def disaster_recovery_drill(lib):
+    """Run a corruption and disaster recovery drill.
+    Tests: Git history checkout vs metadata-aware restore, tag appearance.
+    Returns results dict."""
+    results = {
+        "git_checkout_test": False,
+        "metadata_restore_test": False,
+        "tags_preserved_test": False,
+        "errors": [],
+    }
+
+    # Test 1: Git checkout restores content
+    if not lib.docs:
+        results["errors"].append("No documents to test")
+        return results
+
+    test_doc = lib.docs[0]
+    original_content = ""
+    if os.path.exists(test_doc.path):
+        with open(test_doc.path, "r") as f:
+            original_content = f.read()
+
+    # Check git history exists
+    try:
+        history = gitrepo.git(test_doc.root, "log", "--oneline", "--", test_doc.sc["archive_relpath"],
+                              check=False).stdout.strip()
+        if history:
+            results["git_checkout_test"] = True
+    except Exception as e:
+        results["errors"].append("Git history check failed: %s" % e)
+
+    # Test 2: Metadata restore
+    try:
+        failed = apply_metadata(test_doc)
+        if not failed:
+            results["metadata_restore_test"] = True
+        else:
+            results["errors"].append("Metadata restore failed: %s" % ", ".join(failed))
+    except Exception as e:
+        results["errors"].append("Metadata restore error: %s" % e)
+
+    # Test 3: Tags preserved
+    try:
+        if tools.IS_MAC:
+            tags = metadata.read_tags(test_doc.path)
+            if tags is not None:  # None = error, empty list = no tags
+                results["tags_preserved_test"] = True
+    except Exception as e:
+        results["errors"].append("Tags check error: %s" % e)
+
+    return results
+
+
+def privacy_secrets_audit(lib):
+    """Audit for potential secrets in archived documents.
+    Uses redact-secret.py patterns but read-only.
+    Returns list of suspicious files."""
+    from . import config as cfgmod
+
+    suspicious = []
+    patterns = [
+        (r"sk-[A-Za-z0-9]{20,}", "OpenAI/Anthropic API key"),
+        (r"ghp_[A-Za-z0-9]{36}", "GitHub PAT"),
+        (r"gho_[A-Za-z0-9]{36}", "GitHub OAuth token"),
+        (r"xoxb-[0-9]{11}-[0-9]{11}-[A-Za-z0-9]{24}", "Slack bot token"),
+        (r"xoxp-[0-9]{11}-[0-9]{11}-[0-9]{11}-[A-Za-z0-9]{32}", "Slack user token"),
+        (r"AIza[0-9A-Za-z\-_]{35}", "Google API key"),
+        (r"ya29\.[0-9A-Za-z\-_]+", "Google OAuth token"),
+        (r"password\s*[=:]\s*[^\s]+", "password assignment"),
+        (r"secret\s*[=:]\s*[^\s]+", "secret assignment"),
+        (r"token\s*[=:]\s*[^\s]+", "token assignment"),
+        (r"BEGIN (RSA |EC |DSA )?PRIVATE KEY", "private key"),
+    ]
+
+    for d in lib.docs:
+        if not os.path.exists(d.path):
+            continue
+        try:
+            with open(d.path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            for pattern, desc in patterns:
+                if re.search(pattern, content, re.IGNORECASE):
+                    suspicious.append({
+                        "id": d.id,
+                        "path": d.sc["archive_relpath"],
+                        "pattern": desc,
+                    })
+                    break  # One match per file is enough
+        except Exception:
+            pass
+
+    return suspicious

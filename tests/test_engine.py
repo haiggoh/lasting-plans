@@ -956,3 +956,120 @@ def test_import_cli_playbook_requires_flag(home):
     r = run_cli(home, "import", doc_id, "--dry-run", "--force-playbook")
     assert r.returncode == 0
     assert "import preview" in r.stdout
+
+
+# Phase 9 tests
+
+def test_migrate_detects_existing_git_repo(home):
+    """migrate detects existing Git repo in source."""
+    put(src(home) / "Plan A.md", "# Plan A\n")
+    scan()
+    # Initialize git in source
+    subprocess.run(["git", "init"], cwd=src(home), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=src(home), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test"], cwd=src(home), capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=src(home), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=src(home), capture_output=True)
+
+    lib = engine.Library()
+    audit, imported = engine.migrate_existing_git_repo(lib)
+    assert audit["source_is_git_repo"] is True
+    assert audit["has_remote"] is False
+    assert len(audit["existing_files"]) >= 1
+    # All files already in archive, so skipped
+    assert len(audit["skipped"]) >= 1
+
+
+def test_migrate_imports_missing_files(home):
+    """migrate --apply imports files not yet in archive."""
+    put(src(home) / "Plan A.md", "# Plan A\n")
+    scan()
+    # Initialize git in source
+    subprocess.run(["git", "init"], cwd=src(home), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=src(home), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test"], cwd=src(home), capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=src(home), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=src(home), capture_output=True)
+
+    # Delete from archive but keep in source
+    import os
+    os.remove(src(home) / "Plan A.md")
+    scan()
+    lib = engine.Library()
+
+    # Now add a NEW file to source (not in archive)
+    put(src(home) / "New Plan.md", "# New Plan\n")
+
+    lib = engine.Library()
+    audit, imported = engine.migrate_existing_git_repo(lib, keep_existing=False)
+    assert imported == 1
+    assert len(audit["imported"]) == 1
+    assert audit["imported"][0]["path"] == "New Plan.md"
+
+
+def test_disaster_drill_runs(home):
+    """disaster-drill runs and returns results."""
+    put(src(home) / "Plan A.md", "# Plan A\n")
+    scan()
+    lib = engine.Library()
+    results = engine.disaster_recovery_drill(lib)
+    assert "git_checkout_test" in results
+    assert "metadata_restore_test" in results
+    assert "tags_preserved_test" in results
+    assert "errors" in results
+    # Should pass basic tests
+    assert results["git_checkout_test"] is True
+    assert results["metadata_restore_test"] is True
+
+
+def test_privacy_audit_detects_patterns(home):
+    """privacy-audit detects potential secrets."""
+    put(src(home) / "Plan A.md", "# Plan A\n")
+    put(src(home) / "Secret.md", "API_KEY = sk-1234567890abcdef1234\n")
+    scan()
+    lib = engine.Library()
+    suspicious = engine.privacy_secrets_audit(lib)
+    # Should find at least the secret file
+    assert len(suspicious) >= 1
+    paths = [s["path"] for s in suspicious]
+    assert any("Secret.md" in p for p in paths)
+
+
+def test_migrate_cli_dry_run(home):
+    """CLI migrate dry-run shows preview."""
+    put(src(home) / "Plan A.md", "# Plan A\n")
+    scan()
+    # Initialize git
+    subprocess.run(["git", "init"], cwd=src(home), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=src(home), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test"], cwd=src(home), capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=src(home), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=src(home), capture_output=True)
+
+    r = run_cli(home, "migrate")
+    assert r.returncode == 0
+    assert "migration preview" in r.stdout
+    assert "existing Git repo: yes" in r.stdout
+
+
+def test_disaster_drill_cli(home):
+    """CLI disaster-drill runs."""
+    put(src(home) / "Plan A.md", "# Plan A\n")
+    scan()
+    r = run_cli(home, "disaster-drill")
+    assert r.returncode == 0
+    assert "disaster recovery drill" in r.stdout
+    assert "PASS" in r.stdout
+
+
+def test_privacy_audit_cli(home):
+    """CLI privacy-audit runs."""
+    put(src(home) / "Plan A.md", "# Plan A\n")
+    put(src(home) / "Secret.md", "token = abc123\n")
+    scan()
+    # Need to scan again to pick up new file
+    scan()
+    r = run_cli(home, "privacy-audit")
+    assert r.returncode == 5  # suspicious found
+    assert "privacy/secrets audit" in r.stdout
+    assert "suspicious" in r.stdout.lower() or "file(s)" in r.stdout

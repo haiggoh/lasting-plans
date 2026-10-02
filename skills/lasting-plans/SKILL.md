@@ -45,6 +45,9 @@ don't dump the whole library into context.
 | Waypoints integration status | `lasting-plans waypoints status` |
 | List all waypoint links in archive | `lasting-plans waypoints links` |
 | Copy from archive back to source | `lasting-plans import <ref> [--force-playbook] [--dry-run]` |
+| Migrate existing Git repo in source | `lasting-plans migrate [--apply]` (dry-run first, then --apply to import) |
+| Run disaster recovery drill | `lasting-plans disaster-drill` |
+| Audit for secrets in archives | `lasting-plans privacy-audit` |
 
 Add `--json` for machine-readable output. Exit codes: 3 = no match, 4 = ambiguous
 reference (it lists the candidates, so ask which one or narrow the query), 5 = something is

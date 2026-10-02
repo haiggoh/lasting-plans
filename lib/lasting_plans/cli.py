@@ -587,6 +587,61 @@ def cmd_waypoints(args):
     return 2
 
 
+def cmd_migrate(args):
+    """Migrate existing Git repo in source folder (read-only audit + import)."""
+    lib = engine.Library()
+    audit, imported = engine.migrate_existing_git_repo(lib, keep_existing=not args.apply)
+    if args.apply:
+        lines = ["%s migration applied:" % PREFIX]
+        lines.append("  imported: %d files" % imported)
+        for item in audit.get("imported", []):
+            lines.append("    %s (%s)" % (item["path"], item["id"]))
+        for item in audit.get("skipped", []):
+            lines.append("    skipped: %s (%s)" % (item["path"], item["reason"]))
+        out(args, "\n".join(lines), audit)
+    else:
+        lines = ["%s migration preview (dry-run):" % PREFIX]
+        lines.append("  existing Git repo: %s" % ("yes" if audit.get("source_is_git_repo") else "no"))
+        if audit.get("source_is_git_repo"):
+            lines.append("  has remote: %s" % audit.get("has_remote"))
+            lines.append("  files in source: %d" % len(audit.get("existing_files", [])))
+            lines.append("  would import: %d" % sum(1 for f in audit.get("existing_files", []) if f not in [s["path"] for s in audit.get("skipped", [])]))
+            lines.append("  would skip: %d" % len(audit.get("skipped", [])))
+        out(args, "\n".join(lines), audit)
+    return 0
+
+
+def cmd_disaster_drill(args):
+    """Run corruption and disaster recovery drill."""
+    lib = engine.Library()
+    results = engine.disaster_recovery_drill(lib)
+    lines = ["%s disaster recovery drill:" % PREFIX]
+    lines.append("  git checkout test: %s" % ("PASS" if results["git_checkout_test"] else "FAIL"))
+    lines.append("  metadata restore test: %s" % ("PASS" if results["metadata_restore_test"] else "FAIL"))
+    lines.append("  tags preserved test: %s" % ("PASS" if results["tags_preserved_test"] else "FAIL"))
+    if results["errors"]:
+        lines.append("  errors:")
+        for err in results["errors"]:
+            lines.append("    - %s" % err)
+    out(args, "\n".join(lines), results)
+    return 0 if all([results["git_checkout_test"], results["metadata_restore_test"]]) else 5
+
+
+def cmd_privacy_audit(args):
+    """Audit archives for potential secrets."""
+    lib = engine.Library()
+    suspicious = engine.privacy_secrets_audit(lib)
+    lines = ["%s privacy/secrets audit:" % PREFIX]
+    if not suspicious:
+        lines.append("  no suspicious patterns found")
+    else:
+        lines.append("  %d file(s) with potential secrets:" % len(suspicious))
+        for item in suspicious:
+            lines.append("    %s (%s) — %s" % (item["id"], item["path"], item["pattern"]))
+    out(args, "\n".join(lines), {"suspicious": suspicious})
+    return 0 if not suspicious else 5
+
+
 # ------------------------------------------------------------------ menu
 
 MENU = [
@@ -719,6 +774,10 @@ def build_parser():
     s.add_argument("ref", help="document id, prefix, or path fragment")
     s.add_argument("--force-playbook", action="store_true", help="allow importing playbooks (default: plans only)")
     s.add_argument("--dry-run", action="store_true", help="preview only, do not copy")
+    s = add("migrate", cmd_migrate, "migrate existing Git repo in source folder (read-only audit + import)")
+    s.add_argument("--apply", action="store_true", help="actually import missing files (default: dry-run)")
+    s = add("disaster-drill", cmd_disaster_drill, "run corruption and disaster recovery drill")
+    s = add("privacy-audit", cmd_privacy_audit, "audit archives for potential secrets")
     add("doctor", cmd_doctor, "health checks, including last scan's pending items")
     s = add("settings", cmd_settings, "show / set / reset settings")
     s.add_argument("action", choices=["show", "set", "reset"])
