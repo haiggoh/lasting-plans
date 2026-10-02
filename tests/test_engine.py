@@ -303,7 +303,9 @@ def test_search_finds_text_beyond_any_preview(home):
 
 
 def run_cli(home, *args, stdin=None):
-    env = dict(os.environ)
+    env = dict(os.environ, HOME=str(home))
+    env.pop("CLAUDE_CONFIG_DIR", None)  # ensure test source dir is used
+    env["LASTING_PLANS_SETTLE_SECONDS"] = "0"  # instant settle for tests
     return subprocess.run([sys.executable, BIN] + list(args), capture_output=True, text=True, env=env,
                           input=stdin, timeout=60)
 
@@ -1073,3 +1075,59 @@ def test_privacy_audit_cli(home):
     assert r.returncode == 5  # suspicious found
     assert "privacy/secrets audit" in r.stdout
     assert "suspicious" in r.stdout.lower() or "file(s)" in r.stdout
+
+
+def test_duplicates_cli(home):
+    """CLI duplicates command finds exact and near duplicates."""
+    # Create exact duplicate content (FULL content must match for SHA256)
+    # Use a longer unique content to ensure min_length is met
+    dup_content = "# Duplicate Test\n\n" + "This is the exact same content for testing.\n" * 5
+    put(src(home) / "Plan A.md", dup_content)
+    put(src(home) / "Plan B.md", dup_content)
+    # Create near-duplicate
+    put(src(home) / "Plan C.md", "# Duplicate Test\n\nThis is very similar content for testing with small differences.\n" * 5)
+    scan()
+
+    # Test exact-only
+    r = run_cli(home, "duplicates", "--exact-only")
+    assert r.returncode == 0
+    assert "EXACT duplicates" in r.stdout
+    assert "1 groups" in r.stdout or "group" in r.stdout
+
+    # Test near-duplicate (lower threshold)
+    r = run_cli(home, "duplicates", "--threshold", "0.5")
+    assert r.returncode == 0
+    # Should find exact + near duplicates
+    assert "EXACT duplicates" in r.stdout
+    assert "NEAR duplicates" in r.stdout
+
+
+def test_search_save_run_list_rm(home):
+    """CLI search save/run/list/rm commands work."""
+    put(src(home) / "Plan A.md", "# Plan A\n")
+    put(src(home) / "Plan B.md", "# Plan B with cost tracker\n")
+    scan()
+
+    # Save search
+    r = run_cli(home, "search", "cost tracker", "--save-as", "mysearch")
+    assert r.returncode == 0
+    assert "saved search 'mysearch'" in r.stdout
+
+    # List searches
+    r = run_cli(home, "search-list")
+    assert r.returncode == 0
+    assert "mysearch" in r.stdout
+
+    # Run saved search
+    r = run_cli(home, "search-run", "mysearch")
+    assert r.returncode == 0
+    assert "cost tracker" in r.stdout
+
+    # Delete saved search
+    r = run_cli(home, "search-rm", "mysearch")
+    assert r.returncode == 0
+    assert "deleted saved search 'mysearch'" in r.stdout
+
+    # Verify deleted
+    r = run_cli(home, "search-list")
+    assert "mysearch" not in r.stdout

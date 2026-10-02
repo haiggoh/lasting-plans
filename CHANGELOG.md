@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0] — 2026-10-02
+
+Post-1.0 features: saved searches, duplicate detection, manual backup destination.
+
+- **Saved searches:** `search-save`, `search-list`, `search-run`, `search-rm` — save named
+  searches with full query parameters (regex, history, type, labels) for instant reuse.
+- **Duplicate detection:** `duplicates [--threshold N] [--exact-only]` finds exact SHA256
+  duplicates and near-duplicates via Jaccard similarity on token sets. Supports threshold
+  tuning and exact-only mode.
+- **Manual backup destination:** `backup <path> [--kind plan|playbook]` mirrors archive(s)
+  to a local folder (external drive, etc.) without Git — copies files and sidecars directly.
+- **Skill update:** documents `search-save/run/list/rm`, `duplicates`, `backup` commands.
+- **Tests:** 2 new tests covering saved search CRUD and duplicate detection CLI.
+
 ## [1.0.0] — 2026-10-02
 
 Qualification/migration (Phase 9).

@@ -229,17 +229,33 @@ def cmd_search(args):
             lines.append("%s  %s  %s" % (h["id"] or "(untracked)", h["path"], "in current text" if h["in_current"] else "ONLY in older revisions"))
             lines += ["    %s  %s  %s" % (c["sha"][:10], c["date"][:10], c["subject"][:70]) for c in h["commits"][:5]]
         out(args, "\n".join(lines), {"hits": hits})
-        return 0
-    hits = engine.search(lib, args.query, regex=args.regex, limit=args.limit + args.offset)[args.offset:]
-    if not hits:
-        out(args, "%s: no match for %r in %d document(s)" % (PREFIX, args.query, len(lib.docs)), {"hits": []})
-        return 3
-    lines = []
-    for h in hits:
-        lines.append("%s  %s  (%d match%s%s)" % (h["id"], h["path"], h["matches"], "" if h["matches"] == 1 else "es",
-                                                ", name" if h["name_match"] else ""))
-        lines += ["    … %s …" % s for s in h["snippets"]]
-    out(args, "\n".join(lines), {"hits": hits})
+    else:
+        hits = engine.search(lib, args.query, regex=args.regex, limit=args.limit + args.offset)[args.offset:]
+        if not hits:
+            out(args, "%s: no match for %r in %d document(s)" % (PREFIX, args.query, len(lib.docs)), {"hits": []})
+            return 3
+        lines = []
+        for h in hits:
+            lines.append("%s  %s  (%d match%s%s)" % (h["id"], h["path"], h["matches"], "" if h["matches"] == 1 else "es",
+                                                    ", name" if h["name_match"] else ""))
+            lines += ["    … %s …" % s for s in h["snippets"]]
+        out(args, "\n".join(lines), {"hits": hits})
+
+    # Save search if --save-as provided
+    if getattr(args, "save_as", None):
+        cfg = cfgmod.load()
+        searches = cfg.get("saved_searches", {})
+        if args.save_as in searches:
+            print("%s: search %r already exists; delete first or use different name" % (PREFIX, args.save_as), file=sys.stderr)
+            return 2
+        searches[args.save_as] = {
+            "query": args.query,
+            "regex": args.regex,
+            "history": args.history,
+        }
+        cfg["saved_searches"] = searches
+        cfgmod.save(cfg)
+        print("%s: saved search %r" % (PREFIX, args.save_as))
     return 0
 
 
@@ -642,6 +658,144 @@ def cmd_privacy_audit(args):
     return 0 if not suspicious else 5
 
 
+def cmd_search_save(args):
+    """Save a named search for reuse."""
+    cfg = cfgmod.load()
+    searches = cfg.get("saved_searches", {})
+    if args.name in searches:
+        print("%s: search %r already exists; use different name or delete first" % (PREFIX, args.name), file=sys.stderr)
+        return 2
+    searches[args.name] = {
+        "query": args.query,
+        "regex": args.regex,
+        "history": args.history,
+        "type": args.type,
+        "labels": args.label or [],
+    }
+    cfg["saved_searches"] = searches
+    cfgmod.save(cfg)
+    print("%s: saved search %r" % (PREFIX, args.name))
+    return 0
+
+
+def cmd_search_list(args):
+    """List saved searches."""
+    cfg = cfgmod.load()
+    searches = cfg.get("saved_searches", {})
+    if not searches:
+        print("%s: no saved searches" % PREFIX)
+        return 0
+    lines = ["%s saved searches:" % PREFIX]
+    for name, params in searches.items():
+        q = params["query"]
+        flags = []
+        if params.get("regex"):
+            flags.append("regex")
+        if params.get("history"):
+            flags.append("history")
+        if params.get("type"):
+            flags.append("type:%s" % params["type"])
+        if params.get("labels"):
+            flags.append("labels:%s" % ",".join(params["labels"]))
+        lines.append("  %s: %s [%s]" % (name, q, ", ".join(flags) or "default"))
+    out(args, "\n".join(lines), searches)
+    return 0
+
+
+def cmd_search_run(args):
+    """Run a saved search by name."""
+    cfg = cfgmod.load()
+    searches = cfg.get("saved_searches", {})
+    if args.name not in searches:
+        print("%s: no saved search named %r" % (PREFIX, args.name), file=sys.stderr)
+        return 3
+    params = searches[args.name]
+    lib = engine.Library()
+    hits = engine.search(lib, params["query"], regex=params.get("regex", False),
+                         limit=args.limit + args.offset)[args.offset:]
+    if params.get("history"):
+        hits = library.search_history(lib, params["query"], regex=params.get("regex", False),
+                                      limit=args.limit + args.offset)[args.offset:]
+    if params.get("type"):
+        hits = [h for h in hits if h.get("type") == params["type"]]
+    if params.get("labels"):
+        lib_docs = {d.id: d for d in lib.docs}
+        hits = [h for h in hits if h.get("id") in lib_docs and
+                all(lbl in library.labels_of(lib_docs[h["id"]]) for lbl in params["labels"])]
+    if not hits:
+        out(args, "%s: no match for saved search %r" % (PREFIX, args.name), {"hits": []})
+        return 3
+    lines = []
+    for h in hits:
+        lines.append("%s  %s  (%d match%s%s)" % (h["id"], h["path"], h["matches"], "" if h["matches"] == 1 else "es",
+                                                ", name" if h["name_match"] else ""))
+        lines += ["    … %s …" % s for s in h["snippets"]]
+    out(args, "\n".join(lines), {"hits": hits, "search_name": args.name})
+    return 0
+
+
+def cmd_search_rm(args):
+    """Delete a saved search."""
+    cfg = cfgmod.load()
+    searches = cfg.get("saved_searches", {})
+    if args.name not in searches:
+        print("%s: no saved search named %r" % (PREFIX, args.name), file=sys.stderr)
+        return 3
+    del searches[args.name]
+    cfg["saved_searches"] = searches
+    cfgmod.save(cfg)
+    print("%s: deleted saved search %r" % (PREFIX, args.name))
+    return 0
+
+
+def cmd_duplicates(args):
+    """Find exact or near-duplicate documents in archives."""
+    lib = engine.Library()
+    if args.exact_only:
+        # Only exact duplicates
+        results = engine.find_duplicates(lib, threshold=1.0, min_length=args.min_length)
+        results["near"] = []
+    else:
+        results = engine.find_duplicates(lib, threshold=args.threshold, min_length=args.min_length)
+
+    lines = ["%s duplicate scan:" % PREFIX]
+    if not results["exact"] and not results["near"]:
+        lines.append("  no duplicates found")
+    else:
+        if results["exact"]:
+            lines.append("  EXACT duplicates (%d groups):" % len(results["exact"]))
+            for g in results["exact"]:
+                lines.append("    SHA: %s" % g["sha256"][:16])
+                for d in g["docs"]:
+                    lines.append("      %s  %s" % (d["id"], d["path"]))
+        if results["near"]:
+            lines.append("  NEAR duplicates (%d pairs, threshold >= %.0f%%):" % (len(results["near"]), args.threshold * 100))
+            for g in results["near"][:20]:
+                lines.append("    %.1f%% similar:" % (g["similarity"] * 100))
+                for d in g["docs"]:
+                    lines.append("      %s  %s" % (d["doc"].id, d["doc"].sc["archive_relpath"]))
+            if len(results["near"]) > 20:
+                lines.append("    ... %d more (use --exact-only or raise threshold)" % (len(results["near"]) - 20))
+
+    out(args, "\n".join(lines), results)
+    return 0
+
+
+def cmd_backup(args):
+    """Backup archive(s) to a local destination folder (external drive, etc.)."""
+    lib = engine.Library()
+    kind = args.kind if args.kind in ("plan", "playbook") else None
+    success, failed = engine.backup_to_destination(lib, args.destination, kind)
+    lines = ["%s backup to %s:" % (PREFIX, args.destination)]
+    lines.append("  copied: %d file(s)" % success)
+    if failed:
+        lines.append("  failed: %d" % len(failed))
+        for f in failed[:10]:
+            lines.append("    %s: %s" % (f.get("id", "unknown"), f.get("error", f.get("path", "unknown"))))
+    out(args, "\n".join(lines), {"success": success, "failed": failed})
+    return 0 if not failed else 5
+
+
 # ------------------------------------------------------------------ menu
 
 MENU = [
@@ -660,6 +814,10 @@ MENU = [
     ("scheduler status", "Watcher status", []),
     ("waypoints status", "Waypoints integration status", []),
     ("waypoints links", "List all waypoint links in archive", []),
+    ("search-list", "List saved searches", []),
+    ("search-run", "Run a saved search", ["name"]),
+    ("search-save", "Save a search", ["name", "query"]),
+    ("search-rm", "Delete a saved search", ["name"]),
 ]
 
 
@@ -734,6 +892,7 @@ def build_parser():
     s.add_argument("--history", action="store_true", help="search EVERY committed revision, including deleted text")
     s.add_argument("--limit", type=int, default=50)
     s.add_argument("--offset", type=int, default=0)
+    s.add_argument("--save-as", help="save this search with a name for later reuse")
     s = add("history", cmd_history, "commits touching a document (content vs metadata)")
     s.add_argument("ref")
     s = add("diff", cmd_diff, "diff a document: latest content change, or REV_A [REV_B] "
@@ -778,6 +937,27 @@ def build_parser():
     s.add_argument("--apply", action="store_true", help="actually import missing files (default: dry-run)")
     s = add("disaster-drill", cmd_disaster_drill, "run corruption and disaster recovery drill")
     s = add("privacy-audit", cmd_privacy_audit, "audit archives for potential secrets")
+    s = add("search-save", cmd_search_save, "save a named search for reuse")
+    s.add_argument("name")
+    s.add_argument("--query", required=True)
+    s.add_argument("--regex", action="store_true")
+    s.add_argument("--history", action="store_true")
+    s.add_argument("--type", choices=["plan", "playbook"])
+    s.add_argument("--label", action="append")
+    s = add("search-list", cmd_search_list, "list saved searches")
+    s = add("search-run", cmd_search_run, "run a saved search by name")
+    s.add_argument("name")
+    s.add_argument("--limit", type=int, default=50)
+    s.add_argument("--offset", type=int, default=0)
+    s = add("search-rm", cmd_search_rm, "delete a saved search")
+    s.add_argument("name")
+    s = add("duplicates", cmd_duplicates, "find exact or near-duplicate documents in archives")
+    s.add_argument("--threshold", type=float, default=0.9, help="similarity threshold for near-duplicates (0.0-1.0)")
+    s.add_argument("--min-length", type=int, default=100, help="minimum document length to consider")
+    s.add_argument("--exact-only", action="store_true", help="only show exact SHA256 duplicates")
+    s = add("backup", cmd_backup, "backup archive(s) to a local destination folder (external drive, etc.)")
+    s.add_argument("destination", help="path to backup destination folder")
+    s.add_argument("--kind", choices=["plan", "playbook"], help="backup only this archive (default: both)")
     add("doctor", cmd_doctor, "health checks, including last scan's pending items")
     s = add("settings", cmd_settings, "show / set / reset settings")
     s.add_argument("action", choices=["show", "set", "reset"])

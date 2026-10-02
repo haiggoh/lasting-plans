@@ -48,6 +48,9 @@ don't dump the whole library into context.
 | Migrate existing Git repo in source | `lasting-plans migrate [--apply]` (dry-run first, then --apply to import) |
 | Run disaster recovery drill | `lasting-plans disaster-drill` |
 | Audit for secrets in archives | `lasting-plans privacy-audit` |
+| Save/search/manage searches | `lasting-plans search-save/run/list/rm` |
+| Find duplicate documents | `lasting-plans duplicates [--threshold N] [--exact-only]` |
+| Backup to local destination | `lasting-plans backup <path> [--kind plan|playbook]` |
 
 Add `--json` for machine-readable output. Exit codes: 3 = no match, 4 = ambiguous
 reference (it lists the candidates, so ask which one or narrow the query), 5 = something is

@@ -921,7 +921,7 @@ def migrate_existing_git_repo(lib, keep_existing=True):
     }
 
     # Walk source and find all document files
-    for rel, abspath in walk_docs(lib.source):
+    for rel, _ in walk_docs(lib.source):
         audit["existing_files"].append(rel)
 
     # Import each file that's not already in archives
@@ -985,10 +985,6 @@ def disaster_recovery_drill(lib):
         return results
 
     test_doc = lib.docs[0]
-    original_content = ""
-    if os.path.exists(test_doc.path):
-        with open(test_doc.path, "r") as f:
-            original_content = f.read()
 
     # Check git history exists
     try:
@@ -1025,8 +1021,6 @@ def privacy_secrets_audit(lib):
     """Audit for potential secrets in archived documents.
     Uses redact-secret.py patterns but read-only.
     Returns list of suspicious files."""
-    from . import config as cfgmod
-
     suspicious = []
     patterns = [
         (r"sk-[A-Za-z0-9]{20,}", "OpenAI/Anthropic API key"),
@@ -1060,3 +1054,125 @@ def privacy_secrets_audit(lib):
             pass
 
     return suspicious
+
+
+# ---------------------------------------------------------------- backup destination
+
+def backup_to_destination(lib, destination, kind=None):
+    """Backup archive(s) to a local destination folder (external drive, etc.).
+    This creates a mirror of the archive without using Git - just copies files and sidecars.
+    If kind is specified ('plan' or 'playbook'), only that archive is backed up.
+    Returns (success_count, failed_items)."""
+    import shutil
+
+    if not os.path.isdir(destination):
+        try:
+            os.makedirs(destination, exist_ok=True)
+        except OSError as e:
+            return 0, [{"error": "cannot create destination: %s" % e}]
+
+    kinds = [kind] if kind in ("plan", "playbook") else list(lib.roots.keys())
+    success = 0
+    failed = []
+
+    for k in kinds:
+        root = lib.roots[k]
+        dest_kind = os.path.join(destination, k)
+        os.makedirs(dest_kind, exist_ok=True)
+
+        # Copy all documents
+        for d in lib.docs:
+            if d.type != k:
+                continue
+            if not os.path.exists(d.path):
+                failed.append({"id": d.id, "path": d.sc["archive_relpath"], "error": "source missing"})
+                continue
+            try:
+                dest_path = os.path.join(dest_kind, d.sc["archive_relpath"])
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                shutil.copy2(d.path, dest_path)
+                # Also copy sidecar
+                sc_src = os.path.join(root, sidecar_rel(d.id))
+                sc_dest = os.path.join(dest_kind, sidecar_rel(d.id))
+                os.makedirs(os.path.dirname(sc_dest), exist_ok=True)
+                shutil.copy2(sc_src, sc_dest)
+                success += 1
+            except OSError as e:
+                failed.append({"id": d.id, "path": d.sc["archive_relpath"], "error": str(e)})
+
+    return success, failed
+
+
+def find_duplicates(lib, threshold=0.9, min_length=100):
+    """Find documents with similar content using content hashing and similarity.
+    Returns list of groups of potentially duplicate documents.
+    Uses SHA256 for exact matches and simple token overlap for near-duplicates.
+    """
+    docs_with_content = []
+    for d in lib.docs:
+        if not os.path.exists(d.path):
+            continue
+        try:
+            with open(d.path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except OSError:
+            continue
+        if len(content) < min_length:
+            continue
+        # Normalize: lowercase, strip whitespace, split into words
+        tokens = set(content.lower().split())
+        if len(tokens) < 10:
+            continue
+        docs_with_content.append({
+            "doc": d,
+            "content": content,
+            "tokens": tokens,
+            "sha256": sha256_bytes(content.encode("utf-8")),
+        })
+
+    # First pass: exact SHA matches
+    by_sha = {}
+    for item in docs_with_content:
+        by_sha.setdefault(item["sha256"], []).append(item)
+
+    exact_groups = [items for items in by_sha.values() if len(items) > 1]
+
+    # Second pass: near-duplicate detection using token overlap (Jaccard similarity)
+    near_groups = []
+    checked = set()
+    for i, a in enumerate(docs_with_content):
+        for b in docs_with_content[i+1:]:
+            key = (a["doc"].id, b["doc"].id)
+            if key in checked or (b["doc"].id, a["doc"].id) in checked:
+                continue
+            checked.add(key)
+
+            # Quick filter: if token counts differ too much, skip
+            if abs(len(a["tokens"]) - len(b["tokens"])) / max(len(a["tokens"]), len(b["tokens"])) > 0.5:
+                continue
+
+            # Jaccard similarity
+            intersection = len(a["tokens"] & b["tokens"])
+            union = len(a["tokens"] | b["tokens"])
+            if union > 0:
+                similarity = intersection / union
+                if similarity >= threshold:
+                    near_groups.append({
+                        "similarity": similarity,
+                        "docs": [a, b],
+                    })
+
+    return {
+        "exact": [
+            {
+                "count": len(items),
+                "sha256": items[0]["sha256"],
+                "docs": [{"id": x["doc"].id, "path": x["doc"].sc["archive_relpath"]} for x in items],
+            }
+            for items in exact_groups
+        ],
+        "near": sorted(near_groups, key=lambda g: g["similarity"], reverse=True),
+    }
+
+
+# ---------------------------------------------------------------- doctor (continued)

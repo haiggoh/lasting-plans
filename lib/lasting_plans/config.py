@@ -17,6 +17,7 @@ DEFAULTS = {
     "classify_overrides": {},    # source-relative path -> "plan" | "playbook"
     "remotes": {},               # "plan" / "playbook" -> private Git URL; empty = local only
     "remote_push": "auto",       # "auto": push after each committing scan; "manual": only on `remote push`
+    "saved_searches": {},        # name -> {query, regex, type, labels, history}
 }
 TYPES = {
     "source_dir": (str, type(None)),
@@ -27,6 +28,7 @@ TYPES = {
     "classify_overrides": dict,
     "remotes": dict,
     "remote_push": str,
+    "saved_searches": dict,
 }
 
 

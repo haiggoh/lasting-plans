@@ -2,7 +2,18 @@
 
 ## Current released version
 
-`1.0.0`
+`1.1.0`
+
+### Version 1.1.0 — Post-1.0 features (2026-10-02) ✅ COMPLETE
+- **Saved searches:** `search-save`, `search-list`, `search-run`, `search-rm` — save named
+  searches with full query parameters (regex, history, type, labels) for instant reuse.
+- **Duplicate detection:** `duplicates [--threshold N] [--exact-only]` finds exact SHA256
+  duplicates and near-duplicates via Jaccard similarity on token sets.
+- **Manual backup destination:** `backup <path> [--kind plan|playbook]` mirrors archive(s)
+  to a local folder (external drive, etc.) without Git — copies files and sidecars directly.
+- **Skill update:** documents `search-save/run/list/rm`, `duplicates`, `backup` commands.
+
+---
 
 ### Version 1.0.0 — Qualification/migration (Phase 9) (2026-10-02) ✅ COMPLETE
 - **Migration path:** `lasting-plans migrate [--apply]` detects existing Git repo in Claude's
