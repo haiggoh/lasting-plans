@@ -10,7 +10,7 @@ import sys
 
 from . import PREFIX, __version__
 from . import config as cfgmod
-from . import engine, gitrepo, library, metadata, remote, scheduler
+from . import engine, gitrepo, library, metadata, remote, scheduler, waypoints
 
 LIB_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -70,6 +70,18 @@ def cmd_status(args):
             when = (" at %s, %s" % ((v.get("last_pushed_sha") or "")[:10], v.get("pushed_utc"))) if v.get("pushed_utc") else ""
             lines.append("  remote %-9s %s%s%s" % (k + ":", v["state"], when,
                          (" (%s push)" % v["mode"]) if v.get("mode") else ""))
+
+    # Waypoints integration diagnostics
+    wp_diag = waypoints.get_waypoints_diagnostics()
+    st["waypoints"] = wp_diag
+    if wp_diag["live_available"]:
+        lines.append("  waypoints: live %d (contract %d), archive %d (contract %s)" % (
+            wp_diag["live_count"], wp_diag["live_contract"],
+            wp_diag["archive_count"], wp_diag["archive_contract"] or "n/a"))
+    else:
+        lines.append("  waypoints: integration unavailable (%s)" % (
+            "waypoints core not found" if not wp_diag["core_module_available"] else "invalid contract"))
+
     bad = False
     if st["unprotected"]:
         bad = True
@@ -180,9 +192,21 @@ def cmd_show(args):
     j["dates"] = "created %s (%s) · first seen %s · last content edit %s" % (
         (a["created"] or "unknown")[:16], a["created_source"], (a["first_seen"] or "?")[:16], (a["last_content_edit"] or "?")[:16])
     j["updates"] = "%d content revision(s), %d update(s), %.2f per 30 days" % (a["content_revisions"], a["updates"], a["updates_per_30d"])
+
+    # Waypoints integration: find linked waypoints
+    wp_links = waypoints.get_linked_waypoints_for_doc(d)
+    if wp_links["live"] or wp_links["archive"]:
+        wp_lines = []
+        for wp in wp_links["live"]:
+            wp_lines.append("  %s  %s" % (waypoints.format_waypoint_badge(wp), wp["title"][:80]))
+        for wp in wp_links["archive"]:
+            wp_lines.append("  %s  %s" % (waypoints.format_waypoint_badge(wp), wp["title"][:80]))
+        if wp_lines:
+            j["waypoint_links"] = wp_lines
+
     meta = "\n".join("  %-18s %s" % (k, j[k]) for k in (
         "id", "type", "type_reason", "archive_path", "source_relpath", "source_present", "dates",
-        "updates", "tags", "labels", "shown_revision") if j.get(k) not in (None, [], ""))
+        "updates", "tags", "labels", "shown_revision", "waypoint_links") if j.get(k) not in (None, [], ""))
     if args.full:
         body = text
     else:
@@ -483,6 +507,57 @@ def cmd_setup(args):
     return rc
 
 
+def cmd_waypoints(args):
+    """Waypoints integration commands."""
+    lib = engine.Library()
+    if args.action == "status":
+        wp_diag = waypoints.get_waypoints_diagnostics()
+        lines = ["%s waypoints integration" % PREFIX]
+        if wp_diag["live_available"]:
+            lines.append("  live waypoints: %d (contract %d)" % (wp_diag["live_count"], wp_diag["live_contract"]))
+            lines.append("  archive waypoints: %d (contract %s)" % (wp_diag["archive_count"], wp_diag["archive_contract"] or "n/a"))
+            lines.append("  waypoints checkout: %s" % wp_diag["waypoints_path"])
+        else:
+            lines.append("  integration unavailable: %s" % (
+                "waypoints core not found" if not wp_diag["core_module_available"] else "invalid contract"))
+        out(args, "\n".join(lines), wp_diag)
+        return 0 if wp_diag["live_available"] else 5
+
+    if args.action == "links":
+        live_wps = waypoints.load_live_waypoints()
+        archive_wps = waypoints.load_archive_waypoints()
+        if not live_wps and not archive_wps:
+            print("%s: waypoints not available" % PREFIX, file=sys.stderr)
+            return 5
+
+        links_found = []
+        for d in lib.docs:
+            result = waypoints.get_linked_waypoints_for_doc(d, live_wps, archive_wps)
+            if result["live"] or result["archive"]:
+                links_found.append({
+                    "doc_id": d.id,
+                    "doc_path": d.sc["archive_relpath"],
+                    "live": [{"id": w["id"], "title": w["title"][:80], "status": waypoints.get_waypoint_status(w)} for w in result["live"]],
+                    "archive": [{"id": w["id"], "title": w["title"][:80], "status": waypoints.get_waypoint_status(w)} for w in result["archive"]],
+                })
+
+        if args.json:
+            out(args, "", {"links": links_found})
+        else:
+            if not links_found:
+                print("%s: no waypoint links found in archive" % PREFIX)
+            else:
+                for link in links_found:
+                    print("%s  %s (%s)" % (PREFIX, link["doc_path"], link["doc_id"]))
+                    for wp in link["live"]:
+                        print("    %s  %s  [%s]" % (PREFIX, wp["id"], wp["title"]))
+                    for wp in link["archive"]:
+                        print("    %s  %s  [%s]" % (PREFIX, wp["id"], wp["title"]))
+        return 0
+
+    return 2
+
+
 # ------------------------------------------------------------------ menu
 
 MENU = [
@@ -499,6 +574,8 @@ MENU = [
     ("remote status", "Remote backup status", []),
     ("settings show", "Show settings", []),
     ("scheduler status", "Watcher status", []),
+    ("waypoints status", "Waypoints integration status", []),
+    ("waypoints links", "List all waypoint links in archive", []),
 ]
 
 
@@ -621,6 +698,9 @@ def build_parser():
     s.add_argument("--max-seconds", type=float, help=argparse.SUPPRESS)
     s = add("setup", cmd_setup, "first run: create archives, import, install the watcher")
     s.add_argument("--no-scheduler", action="store_true")
+    s = add("waypoints", None, "waypoints integration: status | links")
+    s.add_argument("action", choices=["status", "links"])
+    s.set_defaults(fn=cmd_waypoints)
     return p
 
 

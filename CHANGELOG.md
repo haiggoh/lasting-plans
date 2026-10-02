@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 — 2026-09-29
+## [0.3.0] — 2026-09-29
 
 Library usability.
 
