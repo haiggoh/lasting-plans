@@ -44,6 +44,7 @@ don't dump the whole library into context.
 | Dates lost in a backup/migration | `lasting-plans recover-dates --since D [--until D] [--mtimes TSV]` (dry run), then `--apply --reason "…"` |
 | Waypoints integration status | `lasting-plans waypoints status` |
 | List all waypoint links in archive | `lasting-plans waypoints links` |
+| Copy from archive back to source | `lasting-plans import <ref> [--force-playbook] [--dry-run]` |
 
 Add `--json` for machine-readable output. Exit codes: 3 = no match, 4 = ambiguous
 reference (it lists the candidates, so ask which one or narrow the query), 5 = something is

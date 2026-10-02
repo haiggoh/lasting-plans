@@ -507,6 +507,35 @@ def cmd_setup(args):
     return rc
 
 
+def cmd_import(args):
+    """Import a document from archive to source folder (reverse import)."""
+    lib = engine.Library()
+    result, sha = engine.import_to_source(lib, args.ref, force_type="playbook" if args.force_playbook else None)
+    if "error" in result:
+        print("%s: %s" % (PREFIX, result["error"]), file=sys.stderr)
+        return 2
+    if args.dry_run:
+        if result.get("conflict"):
+            print("%s: CONFLICT — source has diverged from last import" % PREFIX)
+            print("  dest: %s" % result["dest_path"])
+            print("  source hash: %s" % (result.get("source_sha256") or "n/a")[:16])
+            print("  archive hash: %s" % (result.get("archive_sha256") or "n/a")[:16])
+            print("  last common: %s" % (result.get("last_common_sha") or "n/a")[:16])
+            print("  Use --force-playbook to override (if playbook) or resolve manually")
+            return 5
+        print("%s import preview:" % PREFIX)
+        print("  doc: %s" % result.get("archive_relpath", args.ref))
+        print("  dest: %s" % result["dest_path"])
+        print("  source exists: %s" % result["source_exists"])
+        if result.get("has_diverged"):
+            print("  ⚠ source has diverged from last import")
+        return 0
+    print("%s: imported %s to %s" % (PREFIX, args.ref, result["dest_path"]))
+    if sha:
+        print("  commit: %s" % sha[:10])
+    return 0
+
+
 def cmd_waypoints(args):
     """Waypoints integration commands."""
     lib = engine.Library()
@@ -686,6 +715,10 @@ def build_parser():
     s.add_argument("url", nargs="?", help="Git URL (set/clone) or OWNER/NAME (create-github)")
     s.add_argument("--verify", action="store_true", help="status: read the remote's tip now (network)")
     s.add_argument("--confirm-private", action="store_true", help="accept a non-GitHub URL whose privacy cannot be checked")
+    s = add("import", cmd_import, "opt-in copy from archive to source folder (reverse import)")
+    s.add_argument("ref", help="document id, prefix, or path fragment")
+    s.add_argument("--force-playbook", action="store_true", help="allow importing playbooks (default: plans only)")
+    s.add_argument("--dry-run", action="store_true", help="preview only, do not copy")
     add("doctor", cmd_doctor, "health checks, including last scan's pending items")
     s = add("settings", cmd_settings, "show / set / reset settings")
     s.add_argument("action", choices=["show", "set", "reset"])

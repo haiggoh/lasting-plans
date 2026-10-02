@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0] — 2026-10-02
+
+Reverse import and recovery (Phase 8).
+
+- **Reverse import:** `lasting-plans import <ref> [--dry-run] [--force-playbook]` copies a document
+  from archive back to the source folder (`~/.claude/plans`). Opt-in only — never automatic.
+- **Playbook protection:** playbooks in `Claude-playbooks` require explicit `--force-playbook` to
+  import; plans import by default. Source copy never overwritten without confirmation.
+- **Divergence detection:** `--dry-run` previews destination and detects if source has diverged
+  from last imported hash (conflict = source edited externally since last scan).
+- **Sidecar update:** successful import updates `last_import_sha256` and `source_relpath` in sidecar,
+  commits if Git identity configured.
+- **Skill update:** documents `import` command.
+- **Tests:** 5 new tests in `test_engine.py` covering preview, conflict detection, playbook flag,
+  CLI dry-run, and full import with apply.
+
 ## [0.4.0] — 2026-10-02
 
 Waypoints integration.

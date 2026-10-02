@@ -744,6 +744,117 @@ def apply_metadata(doc):
     return _apply_sidecar_meta(doc.path, doc.sc)
 
 
+# ---------------------------------------------------------------- reverse import & recovery
+
+def _source_dest_path(lib, doc, force_type=None):
+    """Compute the destination path in the source folder for a document.
+    For plans, uses source_relpath if available, else archive_relpath.
+    For playbooks, only imports if explicitly requested (force_type='playbook')."""
+    if doc.type == "playbook" and force_type != "playbook":
+        return None, "playbook import requires explicit --force-playbook"
+
+    rel = doc.sc.get("source_relpath") or doc.sc["archive_relpath"]
+    dest = os.path.join(lib.source, rel)
+    return dest, None
+
+
+def restore_preview(lib, doc, force_type=None):
+    """Dry-run preview of restoring a document to the source folder.
+    Returns (can_restore, details_dict) where details_dict has keys:
+      - dest_path: destination path
+      - source_exists: bool
+      - source_sha256: hash if exists
+      - archive_sha256: hash of archive copy
+      - has_diverged: bool (source differs from last imported)
+      - last_common_sha: last known common hash or None
+      - conflict: bool (diverged and source exists)"""
+    dest, err = _source_dest_path(lib, doc, force_type)
+    if err:
+        return False, {"error": err}
+
+    source_exists = os.path.exists(dest)
+    archive_sha = doc.sc.get("archive_sha256") or (sha256_file(doc.path) if os.path.exists(doc.path) else None)
+    last_import = doc.sc.get("last_import_sha256")
+
+    details = {
+        "dest_path": dest,
+        "source_exists": source_exists,
+        "archive_sha256": archive_sha,
+        "last_import_sha256": last_import,
+        "has_diverged": False,
+        "last_common_sha": last_import,
+        "conflict": False,
+    }
+
+    if source_exists:
+        source_sha = sha256_file(dest)
+        details["source_sha256"] = source_sha
+        if last_import and source_sha != last_import:
+            details["has_diverged"] = True
+            details["conflict"] = True
+
+    # Can restore if no conflict, or if force_playbook for playbooks
+    can = not details["conflict"]
+    return can, details
+
+
+def restore_to_source(lib, doc, force_type=None, apply=False):
+    """Restore (copy) a document from archive to source folder.
+    If apply=False, only returns preview. If apply=True, copies and returns commit info.
+    Returns (preview_or_result, commit_sha_or_None).
+    """
+    dest, err = _source_dest_path(lib, doc, force_type)
+    if err:
+        return {"error": err}, None
+
+    can, details = restore_preview(lib, doc, force_type)
+    if not can:
+        details["error"] = "source has diverged from last import; use --force to overwrite"
+        return details, None
+
+    if not apply:
+        details["action"] = "preview"
+        return details, None
+
+    # Copy archive to source
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(doc.path, "rb") as f:
+        data = f.read()
+    _atomic_copy_bytes(data, dest)
+
+    # Update sidecar with new import hash
+    doc.sc["last_import_sha256"] = sha256_bytes(data)
+    doc.sc["source_relpath"] = doc.sc.get("source_relpath") or doc.sc["archive_relpath"]
+    if doc.sc.get("source_relpath") not in doc.sc.get("source_history", []):
+        doc.sc.setdefault("source_history", []).append(doc.sc["source_relpath"])
+    write_sidecar(doc.root, doc.sc)
+
+    # Commit if Git identity exists
+    sha = None
+    if gitrepo.has_identity(doc.root):
+        sha = gitrepo.commit_paths(doc.root, [doc.sc["archive_relpath"], sidecar_rel(doc.id)],
+                                   "restore: %s copied to source" % doc.sc["archive_relpath"])
+
+    details["action"] = "restored"
+    details["commit"] = sha
+    return details, sha
+
+
+def import_to_source(lib, doc_id, force_type=None):
+    """Import a document from archive to source folder (opt-in).
+    This is like restore but for documents that may not have a source_relpath.
+    Returns (result_dict, commit_sha_or_None)."""
+    matches = lib.resolve(doc_id)
+    if not matches:
+        return {"error": "no document matches %r" % doc_id}, None
+    if len(matches) > 1:
+        return {"error": "ambiguous: %d matches" % len(matches)}, None
+    doc = matches[0]
+    return restore_to_source(lib, doc, force_type=force_type, apply=True)
+
+
+# ---------------------------------------------------------------- doctor (continued)
+
 def doctor(lib):
     checks = []
 

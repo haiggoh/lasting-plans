@@ -853,3 +853,106 @@ def test_huge_multibyte_document_is_bounded_by_default(home):
     assert r.returncode == 0 and len(r.stdout) < 2000
     r = run_cli(home, "show", "big.md", "--full", "--json")
     assert json.loads(r.stdout)["content"] == body
+
+
+def test_import_preview_shows_dest_and_conflict(home):
+    """import --dry-run shows destination and detects divergence."""
+    put(src(home) / "Plan A.md", "# Plan A\n")
+    scan()
+    lib = engine.Library()
+    d = lib.resolve("Plan A.md")[0]
+
+    # Dry run - no divergence yet
+    can, details = engine.restore_preview(lib, d)
+    assert can is True
+    assert details["dest_path"] == str(src(home) / "Plan A.md")
+    assert details["source_exists"] is True
+    assert details["conflict"] is False
+
+    # Modify source OUTSIDE of lasting-plans to create divergence
+    # (simulating user edit or external change without scan)
+    plan_path = src(home) / "Plan A.md"
+    plan_path.write_text("# Plan A MODIFIED\n", encoding="utf-8")
+    # Don't run scan - we want to test divergence detection against last_import_sha256
+
+    lib = engine.Library()
+    d = lib.resolve("Plan A.md")[0]
+
+    can, details = engine.restore_preview(lib, d)
+    assert can is False
+    assert details["conflict"] is True
+    assert details["has_diverged"] is True
+
+
+def test_import_playbook_requires_force(home):
+    """Playbooks require --force-playbook to import."""
+    put(src(home) / "PLAYBOOK-x.md", "# PB\n")
+    scan()
+    lib = engine.Library()
+    d = lib.resolve("PLAYBOOK-x.md")[0]
+    assert d.type == "playbook"
+
+    # Without force_playbook, should fail
+    can, details = engine.restore_preview(lib, d)
+    assert can is False
+    assert "playbook import requires explicit" in details["error"]
+
+    # With force_playbook, should succeed
+    can, details = engine.restore_preview(lib, d, force_type="playbook")
+    assert can is True
+
+
+def test_import_creates_source_copy(home):
+    """import with apply=True copies archive to source and updates sidecar."""
+    put(src(home) / "Plan B.md", "# Plan B\n")
+    scan()
+    lib = engine.Library()
+    d = lib.resolve("Plan B.md")[0]
+    doc_id = d.id
+
+    # Delete source to simulate sweep
+    os.remove(src(home) / "Plan B.md")
+    scan()
+    lib = engine.Library()
+    d = lib.resolve(doc_id)[0]
+
+    # Import with apply
+    result, sha = engine.import_to_source(lib, doc_id)
+    assert "error" not in result
+    assert result["action"] == "restored"
+    assert os.path.exists(src(home) / "Plan B.md")
+    with open(src(home) / "Plan B.md") as f:
+        assert f.read() == "# Plan B\n"
+    # sha may be None if no Git identity, but operation should succeed
+    # The important thing is the file was restored
+
+
+def test_import_cli_dry_run(home):
+    """CLI import --dry-run shows preview."""
+    put(src(home) / "Plan C.md", "# Plan C\n")
+    scan()
+    lib = engine.Library()
+    d = lib.resolve("Plan C.md")[0]
+    doc_id = d.id
+
+    r = run_cli(home, "import", doc_id, "--dry-run")
+    assert r.returncode == 0
+    assert "import preview" in r.stdout
+    assert "dest:" in r.stdout
+
+
+def test_import_cli_playbook_requires_flag(home):
+    """CLI import playbook without --force-playbook fails."""
+    put(src(home) / "PLAYBOOK-y.md", "# PB\n")
+    scan()
+    lib = engine.Library()
+    d = lib.resolve("PLAYBOOK-y.md")[0]
+    doc_id = d.id
+
+    r = run_cli(home, "import", doc_id, "--dry-run")
+    assert r.returncode == 2
+    assert "playbook import requires explicit" in r.stderr
+
+    r = run_cli(home, "import", doc_id, "--dry-run", "--force-playbook")
+    assert r.returncode == 0
+    assert "import preview" in r.stdout
