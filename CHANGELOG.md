@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.0] — 2026-10-02
+
+Waypoints integration.
+
+- **Waypoints integration:** read `waypoints list --json` and `waypoints archive list --json`
+  via documented public CLI (contract 3 / 1), find explicit path/ID links in document
+  title/summary/detail, surface `[linked]` badge with status indicator.
+- **CLI commands:** `waypoints status` (diagnostics: live/archive counts, contracts, checkout),
+  `waypoints links` (list all documents with waypoint links, `--json` for machine output).
+- **Status dashboard:** includes waypoints integration line with live/archive counts and contracts.
+- **Show command:** displays `[linked ✓]` for done waypoints, `[linked ⏳]` for waiting, `[linked]`
+  for open, with title preview.
+- **Skill update:** documents `waypoints status` and `waypoints links` commands.
+- **Tests:** 8 new tests in `tests/test_waypoints.py` covering diagnostics, loading, link extraction,
+  status/badge formatting.
+- **Version consistency:** `VERSION` file and `docs/ROADMAP.md` added; all four version sources
+  (plugin.json, CHANGELOG, ROADMAP, VERSION) now agree and are validated by test.
+
 ## [0.3.0] — 2026-09-29
 
 Library usability.

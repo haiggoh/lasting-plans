@@ -2,27 +2,33 @@
 
 ## Current released version
 
-`0.3.0`
+`0.4.0`
 
-### Version 0.3.0 — Library usability (2026-09-29)
-- Revisions: `show --rev` and `diff REV_A [REV_B]` with N, -N, first, latest, @YYYY-MM-DD, or sha
-- Historical search: `search --history` finds text in any committed revision
-- Dates kept apart: `show` reports created (with provenance), first seen, and last content edit separately
-- Grouping: `list --group-by month|year|day` groups by creation date with `unknown` bucket last
-- Labels: explicit topic labels stored in sidecar, portable across OSes
-- Search paging: `search` gains `--offset`
+### Version 0.4.0 — Waypoints integration (2026-10-02) ✅ COMPLETE
+- **Waypoints integration:** read `waypoints list --json` and `waypoints archive list --json`
+  via documented public CLI (contract 3 / 1), find explicit path/ID links in document
+  title/summary/detail, surface `[linked]` badge with status indicator.
+- **CLI commands:** `waypoints status` (diagnostics: live/archive counts, contracts, checkout),
+  `waypoints links` (list all documents with waypoint links, `--json` for machine output).
+- **Status dashboard:** includes waypoints integration line with live/archive counts and contracts.
+- **Show command:** displays `[linked ✓]` for done waypoints, `[linked ⏳]` for waiting, `[linked]`
+  for open, with title preview.
+- **Skill update:** documents `waypoints status` and `waypoints links` commands.
+- **Tests:** 8 new tests in `tests/test_waypoints.py` covering diagnostics, loading, link extraction,
+  status/badge formatting.
+- **Version consistency:** `VERSION` file and `docs/ROADMAP.md` added; all four version sources
+  (plugin.json, CHANGELOG, ROADMAP, VERSION) now agree and are validated by test.
 
 ---
 
 ## Planned
 
-### Version 0.4 — Waypoints and portable status (Phase 7) ⬅ NEXT
-- Read `waypoints list --json` and `waypoints archive list --json` via documented public CLI
-- Find explicit path/ID links in document title/summary/detail
-- Surface `[linked]` as display badge (not filename rewrite)
-- Open linked item → yellow presentation tag on macOS
-- Only done/archived links → green; mixed → yellow with all statuses shown
-- Portable sidecar/CLI label authoritative on Linux/Windows
+### Version 0.5 — Reverse import and recovery (Phase 8) ⬅ NEXT
+- User drops ordinary plan into `Claude-plans`: opt-in explicit copy to Claude Code's configured plans folder
+- Playbook stays only in `Claude-playbooks` unless explicitly requested
+- Copies not symlinks; verify no loops, track last common hashes, never overwrite divergent source
+- Restore by stable ID: dry-preview target, refuse differing destination by default
+- Require exact explicit approval to replace; restore metadata supported by OS and report unsupported fields
 - Missing/corrupt/incompatible Waypoints yields `unknown` with diagnostics, never false zero
 - **Receipt 7:** fixture Waypoints contracts + tag round trip on macOS and no-op/portable equivalents on other OSes
 
