@@ -138,6 +138,9 @@ lasting-plans remote clone plan URL        # new machine: clone + re-apply dates
 
 ## CLI
 
+`get-haiggoh apply` (0.8.0 or later) also puts `lasting-plans` on your own shell `PATH`, through the
+`shortcuts` file at this plugin's root.
+
 `lasting-plans` on a terminal shows a dashboard and a numbered menu. Each choice echoes
 the equivalent command and runs the same code. Piped or with a subcommand, it never
 prompts.
