@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.2.0] — 2026-10-03
+
+A `shortcuts` file at the plugin root declares `lasting-plans`, so `get-haiggoh` (0.8.0 or
+later) can put it on your own shell `PATH` through a version-independent shim.
+
 ## [1.1.0] — 2026-10-02
 
 Post-1.0 features: saved searches, duplicate detection, manual backup destination.
