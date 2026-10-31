@@ -1,7 +1,7 @@
 {
   "name": "lasting-plans",
-  "version": "1.2.1",
-  "description": "📜 Claude Code deletes plans older than cleanupPeriodDays (30 days by default). Lasting Plans keeps every plan and playbook in visible, Git-versioned archives (~/Claude-plans, ~/Claude-playbooks) that the sweep cannot touch, with creation dates and Finder tags recorded, a watch-folder LaunchAgent, and a CLI.",
+  "version": "1.2.2",
+  "description": "📜 Keeps every Claude Code plan and playbook in local, Git-versioned archives (~/Claude-plans, ~/Claude-playbooks), out of reach of the cleanup that deletes old plans. It imports existing files, watches for changes on macOS, keeps the archive copy when a source disappears, and records creation dates, Finder tags and labels. A CLI searches, shows history and restores; a remote backup is optional.",
   "author": {
     "name": "Heiko Brantsch"
   },

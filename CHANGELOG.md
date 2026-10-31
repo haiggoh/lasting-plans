@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.2] — 2026-10-31
+
+### Changed — description rewritten to current capabilities (rtc-1.0.0 plan, Part B2)
+
+- plugin.json description set to the user-approved text
+  (2026-10-31-approved-plugin-descriptions.json); identical text lands in the
+  get-haiggoh catalog in the same rollout. Version 1.2.1 → 1.2.2.
+
 ## [1.2.1] — 2026-10-31
 
 ### Changed — About-mark alignment (emoji branding rollout, Task 13)

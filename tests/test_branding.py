@@ -29,9 +29,11 @@ class BrandingTests(unittest.TestCase):
         self.assertNotIn("🗂️", r.stdout)
 
     def test_cli_status_banner_leads_with_the_mark(self):
+        # status exits 5 when the real machine has pending scan items — the banner pin
+        # must not depend on machine state, so accept (0, 5) and pin the first line only
         r = subprocess.run([sys.executable, str(CLI), "status"],
                            capture_output=True, text=True, timeout=15)
-        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(r.returncode, (0, 5), r.stderr)
         self.assertTrue(r.stdout.splitlines()[0].startswith("📜 Lasting Plans "),
                         r.stdout.splitlines()[0])
 
