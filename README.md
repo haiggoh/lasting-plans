@@ -1,4 +1,4 @@
-# 🗂️ Lasting Plans
+# 📜 Lasting Plans
 
 **Claude Code deletes your plans.** At session start it removes top-level files in its
 plans folder (`~/.claude/plans`) that are older than `cleanupPeriodDays`, which defaults to

@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.2.1] — 2026-10-31
+
+### Changed — About-mark alignment (emoji branding rollout, Task 13)
+
+- The GitHub About mark is 📜; the code's `PREFIX` used 🗂️. `PREFIX` is now
+  `📜 Lasting Plans`, which brands every user-facing emit at once: the SessionStart
+  hook's systemMessage (actionable notes only — silent-on-success stays silent), all
+  CLI `PREFIX: …` lines, the `status` banner, and the `--help` description. README h1
+  and plugin.json description carry 📜; SKILL.md gained the standard ≤3-line
+  `## Branding (📜)` invocation-attribution section.
+- Tests: new tests/test_branding.py pins `PREFIX == "📜 Lasting Plans"` exactly, the
+  `--help` banner (📜 present, 🗂️ gone), and the `status` first line. RED→GREEN,
+  mutation-checked. R1: no fleet consumer parses the old glyph.
+- Version 1.2.0 → 1.2.1 (plugin.json, lib __version__, VERSION, CHANGELOG, ROADMAP).
+
 ## [1.2.0] — 2026-10-03
 
 A `shortcuts` file at the plugin root declares `lasting-plans`, so `get-haiggoh` (0.8.0 or

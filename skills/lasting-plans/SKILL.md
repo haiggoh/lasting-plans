@@ -80,4 +80,8 @@ pending or unhealthy.
 - If `lasting-plans` isn't found, say the plugin's CLI is unavailable. Don't answer from
   guesses.
 
-Prefix user-facing messages about this feature with `🗂️ Lasting Plans`.
+Prefix user-facing messages about this feature with `📜 Lasting Plans`.
+
+## Branding (📜)
+
+When you begin working under this skill, lead your first substantive reply with `📜 lasting-plans:` so the user can see which plugin just became active.

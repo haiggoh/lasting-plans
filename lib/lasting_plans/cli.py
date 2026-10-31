@@ -858,7 +858,7 @@ def menu(parser):
 def build_parser():
     p = argparse.ArgumentParser(
         prog="lasting-plans",
-        description="🗂️ Lasting Plans — keep Claude Code plans and playbooks in visible, Git-versioned archives "
+        description="📜 Lasting Plans — keep Claude Code plans and playbooks in visible, Git-versioned archives "
                     "(~/Claude-plans, ~/Claude-playbooks) that the 30-day plans sweep cannot touch. "
                     "Bare `lasting-plans` on a terminal opens a menu; otherwise prints status.",
         epilog=ENV_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
