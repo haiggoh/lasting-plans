@@ -286,12 +286,14 @@ def prepare_roots(lib):
 def _commit(lib, doc_root, rel_doc, doc_id, message, res):
     paths = [rel_doc, sidecar_rel(doc_id)]
     if not gitrepo.has_identity(doc_root):
-        res.pending.append((rel_doc, "uncommitted: no Git user.name/user.email configured"))
+        if res is not None:
+            res.pending.append((rel_doc, "uncommitted: no Git user.name/user.email configured"))
         return None
     try:
         return gitrepo.commit_paths(doc_root, paths, message)
     except gitrepo.GitError as e:
-        res.pending.append((rel_doc, "uncommitted: %s" % e))
+        if res is not None:
+            res.pending.append((rel_doc, "uncommitted: %s" % e))
         return None
 
 
@@ -778,6 +780,7 @@ def restore_preview(lib, doc, force_type=None):
     last_import = doc.sc.get("last_import_sha256")
 
     details = {
+        "archive_relpath": doc.sc["archive_relpath"],
         "dest_path": dest,
         "source_exists": source_exists,
         "archive_sha256": archive_sha,
@@ -790,7 +793,11 @@ def restore_preview(lib, doc, force_type=None):
     if source_exists:
         source_sha = sha256_file(dest)
         details["source_sha256"] = source_sha
-        if last_import and source_sha != last_import:
+        # Divergence vs the recorded import — or, when no import was ever recorded
+        # (archive-originated docs, legacy sidecars), vs the archive copy itself:
+        # an existing, differing source file must never be silently overwritten.
+        if (last_import and source_sha != last_import) or (
+                not last_import and archive_sha and source_sha != archive_sha):
             details["has_diverged"] = True
             details["conflict"] = True
 
@@ -912,7 +919,9 @@ def migrate_existing_git_repo(lib, keep_existing=True):
     Returns (audit_results, imported_count)."""
     is_repo, git_dir, has_remote = detect_source_git_repo(lib.source)
     if not is_repo:
-        return {"message": "No existing Git repo in source directory"}, 0
+        return {"message": "No existing Git repo in source directory",
+                "source_is_git_repo": False, "existing_files": [],
+                "imported": [], "would_import": [], "skipped": []}, 0
 
     audit = {
         "source_is_git_repo": True,

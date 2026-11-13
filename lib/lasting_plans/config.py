@@ -102,6 +102,7 @@ def atomic_write(path, text, mode=0o644):
 
 
 def save(cfg):
+    validate(cfg)  # choke point: no caller can persist an invalid config
     p = config_path()
     if os.path.exists(p):
         with open(p, encoding="utf-8") as f:

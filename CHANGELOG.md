@@ -20,6 +20,14 @@
 - Menu: blank Enter no longer quits (only q/quit/EOF do), and a blank required
   parameter cancels the action instead of running it with an empty token (an empty
   search query matched every document, by name).
+- Review follow-ups (independent cross-family dispatch, 7 findings): `_commit` no
+  longer crashes with AttributeError when migrate passes no scan-results collector
+  (no Git identity → "commit failed" instead); apply-import refuses with the same
+  conflict panel (rc 5) when the source file differs and no last_import is recorded —
+  previously a silent overwrite of the user's file; `migrate` without a Git repo
+  explains why instead of printing "imported: 0 files"; the dry-run preview names the
+  resolved archive path instead of the raw id prefix; `config.save` validates at the
+  persistence boundary, covering every caller.
 
 ## [1.2.2] — 2026-10-31
 

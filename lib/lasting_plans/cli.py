@@ -532,28 +532,23 @@ def cmd_import(args):
     lib = engine.Library()
     result, sha = engine.import_to_source(lib, args.ref, force_type="playbook" if args.force_playbook else None,
                                           apply=not args.dry_run)
+    if result.get("conflict"):
+        print("%s: CONFLICT — the source copy differs from the archive copy" % PREFIX)
+        print("  dest: %s" % result["dest_path"])
+        print("  source hash: %s" % (result.get("source_sha256") or "n/a")[:16])
+        print("  archive hash: %s" % (result.get("archive_sha256") or "n/a")[:16])
+        print("  last common: %s" % (result.get("last_common_sha") or "n/a")[:16])
+        print("  Resolve manually (no force-overwrite exists)")
+        return 5
+    if "error" in result:
+        print("%s: %s" % (PREFIX, result["error"]), file=sys.stderr)
+        return 2
     if args.dry_run:
-        if result.get("conflict"):
-            print("%s: CONFLICT — source has diverged from last import" % PREFIX)
-            print("  dest: %s" % result["dest_path"])
-            print("  source hash: %s" % (result.get("source_sha256") or "n/a")[:16])
-            print("  archive hash: %s" % (result.get("archive_sha256") or "n/a")[:16])
-            print("  last common: %s" % (result.get("last_common_sha") or "n/a")[:16])
-            print("  Resolve manually (no force-overwrite exists)")
-            return 5
-        if "error" in result:
-            print("%s: %s" % (PREFIX, result["error"]), file=sys.stderr)
-            return 2
         print("%s import preview:" % PREFIX)
         print("  doc: %s" % result.get("archive_relpath", args.ref))
         print("  dest: %s" % result["dest_path"])
         print("  source exists: %s" % result["source_exists"])
-        if result.get("has_diverged"):
-            print("  ⚠ source has diverged from last import")
         return 0
-    if "error" in result:
-        print("%s: %s" % (PREFIX, result["error"]), file=sys.stderr)
-        return 2
     print("%s: imported %s to %s" % (PREFIX, args.ref, result["dest_path"]))
     if sha:
         print("  commit: %s" % sha[:10])
@@ -617,6 +612,8 @@ def cmd_migrate(args):
     audit, imported = engine.migrate_existing_git_repo(lib, keep_existing=not args.apply)
     if args.apply:
         lines = ["%s migration applied:" % PREFIX]
+        if audit.get("message"):
+            lines.append("  %s" % audit["message"])
         lines.append("  imported: %d files" % imported)
         for item in audit.get("imported", []):
             lines.append("    %s (%s)" % (item["path"], item["id"]))

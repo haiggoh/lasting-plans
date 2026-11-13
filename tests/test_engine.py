@@ -1293,3 +1293,72 @@ def test_menu_blank_param_cancels_action(home, monkeypatch, capsys):
     assert rc == 0
     assert "cancel" in out.lower(), "blank parameter must cancel, not run the action"
     assert "needle" not in out, "the canceled action must not have run"
+
+
+# ---------------- review findings (Gemini 3.8 Flash dispatch, 2026-11-13): crash, overwrite, shape
+
+def test_migrate_apply_without_git_identity_does_not_crash(home, monkeypatch):
+    """Review F1: migrate --apply with no Git identity must not crash on res=None."""
+    put(src(home) / "Plan A.md", "# Plan A\n")
+    scan()
+    _gitify_source(home)
+    put(src(home) / "Brand New.md", "# Brand New\n")
+    for root in cfgmod.roots(cfgmod.load()).values():
+        subprocess.run(["git", "-C", str(root), "config", "--unset", "user.name"], capture_output=True)
+        subprocess.run(["git", "-C", str(root), "config", "--unset", "user.email"], capture_output=True)
+    monkeypatch.delenv("GIT_AUTHOR_NAME", raising=False)
+    monkeypatch.delenv("GIT_AUTHOR_EMAIL", raising=False)
+    monkeypatch.delenv("GIT_COMMITTER_NAME", raising=False)
+    monkeypatch.delenv("GIT_COMMITTER_EMAIL", raising=False)
+    audit, imported = engine.migrate_existing_git_repo(engine.Library(), keep_existing=False)
+    assert imported == 0
+    assert any(s.get("reason") == "commit failed" for s in audit["skipped"])
+
+
+def test_import_apply_does_not_overwrite_unknown_source(home):
+    """Review F2+F5: apply-import must refuse with the conflict panel (rc 5) when the
+    source file differs and no last_import is recorded — never silently overwrite."""
+    put(src(home) / "Plan F.md", "# Plan F\n")
+    scan()
+    doc_id = engine.Library().resolve("Plan F.md")[0].id
+    d0 = engine.Library().resolve(doc_id)[0]
+    sc = dict(d0.sc)
+    sc.pop("last_import_sha256", None)  # simulate an archive-originated document
+    engine.write_sidecar(d0.root, sc)
+
+    put(src(home) / "Plan F.md", "# Plan F — user edited, unrecoverable if overwritten\n")
+    r = run_cli(home, "import", doc_id)
+    assert r.returncode == 5
+    assert "CONFLICT" in r.stdout
+    with open(src(home) / "Plan F.md", encoding="utf-8") as f:
+        assert "user edited" in f.read(), "apply-import must not silently overwrite"
+
+
+def test_migrate_no_git_repo_reports_message(home):
+    """Review F3: migrate without a Git repo says why instead of 'imported: 0 files'."""
+    put(src(home) / "Plan A.md", "# Plan A\n")
+    scan()  # source is not a Git repo here
+    r = run_cli(home, "migrate", "--apply")
+    assert r.returncode == 0
+    assert "No existing Git repo" in r.stdout
+
+
+def test_import_preview_shows_resolved_doc(home):
+    """Review F6: the dry-run preview names the archive path, not the raw id prefix."""
+    put(src(home) / "The Plan G.md", "# Plan G\n")
+    scan()
+    d = engine.Library().resolve("The Plan G.md")[0]
+    r = run_cli(home, "import", d.id[:8], "--dry-run")
+    assert r.returncode == 0
+    assert "doc: The Plan G.md" in r.stdout
+
+
+def test_config_save_validates_at_the_choke_point(home):
+    """Review F7: cfgmod.save itself refuses invalid cfg — every caller is covered."""
+    cfg = cfgmod.load()
+    cfg["remote_push"] = "banana"
+    with pytest.raises(cfgmod.ConfigError):
+        cfgmod.save(cfg)
+    p = cfgmod.config_path()
+    if os.path.exists(p):
+        assert "banana" not in open(p, encoding="utf-8").read()
