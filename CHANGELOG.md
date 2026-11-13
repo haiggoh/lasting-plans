@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.2.3] — 2026-11-13
+
+### Fixed — dry-runs that wrote, and settings that validated too late (desktop-migration Phase-1 P0 audit)
+
+- `migrate` without `--apply` was never read-only: the engine accepted `keep_existing`
+  but never used it, so every run copied files into the archives, wrote sidecars and
+  created Git commits. It now audits only and reports candidates in
+  `audit["would_import"]`; `--apply` (engine: `keep_existing=False`) imports as before.
+- `import --dry-run` performed the whole import first (copy + sidecar + archive commit)
+  and only then printed its "preview"; the rich conflict panel was unreachable dead
+  code. The dry-run is now a true preview (`import_to_source(..., apply=False)`),
+  conflicts report rc 5 with the full hash evidence, and the misleading "use --force"
+  advice is gone (no force-overwrite flag exists on import or restore).
+- `settings set/reset` validated only AFTER saving: a rejected value (e.g.
+  `interval_seconds 10`, `remote_push banana`) was persisted and every later command
+  failed until the file was repaired by hand. Validation now runs before the write
+  (new `config.validate`), so nothing is persisted on rejection.
+- Menu: blank Enter no longer quits (only q/quit/EOF do), and a blank required
+  parameter cancels the action instead of running it with an empty token (an empty
+  search query matched every document, by name).
+
 ## [1.2.2] — 2026-10-31
 
 ### Changed — description rewritten to current capabilities (rtc-1.0.0 plan, Part B2)

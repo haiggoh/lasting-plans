@@ -810,7 +810,7 @@ def restore_to_source(lib, doc, force_type=None, apply=False):
 
     can, details = restore_preview(lib, doc, force_type)
     if not can:
-        details["error"] = "source has diverged from last import; use --force to overwrite"
+        details["error"] = "source has diverged from last import; resolve manually (no force-overwrite exists)"
         return details, None
 
     if not apply:
@@ -841,9 +841,10 @@ def restore_to_source(lib, doc, force_type=None, apply=False):
     return details, sha
 
 
-def import_to_source(lib, doc_id, force_type=None):
+def import_to_source(lib, doc_id, force_type=None, apply=True):
     """Import a document from archive to source folder (opt-in).
     This is like restore but for documents that may not have a source_relpath.
+    apply=False returns the preview only (no copy, no sidecar write, no commit).
     Returns (result_dict, commit_sha_or_None)."""
     matches = lib.resolve(doc_id)
     if not matches:
@@ -851,7 +852,7 @@ def import_to_source(lib, doc_id, force_type=None):
     if len(matches) > 1:
         return {"error": "ambiguous: %d matches" % len(matches)}, None
     doc = matches[0]
-    return restore_to_source(lib, doc, force_type=force_type, apply=True)
+    return restore_to_source(lib, doc, force_type=force_type, apply=apply)
 
 
 # ---------------------------------------------------------------- doctor (continued)
@@ -903,9 +904,11 @@ def detect_source_git_repo(source_dir):
 
 
 def migrate_existing_git_repo(lib, keep_existing=True):
-    """Migration path for users with existing Git repo in Claude's plans folder.
-    Performs read-only audit and imports existing working files.
-    Does not delete repo or rewrite history.
+    """Migration path for users with an existing Git repo in the plans folder.
+    keep_existing=True (default) is a READ-ONLY audit: nothing is copied or committed;
+    candidates are listed in audit["would_import"]. keep_existing=False is the --apply
+    path: files not yet in the archives are imported. Never deletes the source repo
+    or rewrites history.
     Returns (audit_results, imported_count)."""
     is_repo, git_dir, has_remote = detect_source_git_repo(lib.source)
     if not is_repo:
@@ -917,6 +920,7 @@ def migrate_existing_git_repo(lib, keep_existing=True):
         "has_remote": has_remote,
         "existing_files": [],
         "imported": [],
+        "would_import": [],
         "skipped": [],
     }
 
@@ -950,6 +954,9 @@ def migrate_existing_git_repo(lib, keep_existing=True):
 
         # This mimics _handle_new but for migration
         sc = _new_sidecar(rel, arel, h, kind, reason, origin="migration")
+        if keep_existing:
+            audit["would_import"].append({"path": rel, "id": sc["id"], "type": kind})
+            continue
         try:
             _atomic_copy_bytes(data, os.path.join(root, arel))
         except OSError as e:

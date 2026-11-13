@@ -1131,3 +1131,165 @@ def test_search_save_run_list_rm(home):
     # Verify deleted
     r = run_cli(home, "search-list")
     assert "mysearch" not in r.stdout
+
+
+# ------------------------------------------------------------------ Phase-1 P0 guards (desktop-migration fleet, 2026-11)
+# Dry-run commands must not write; settings must validate before saving; the menu
+# must not quit or act on blank input.
+
+def _archive_snapshot(home):
+    """{type: (file_count, git_commit_count)} for non-mutation asserts (.git excluded)."""
+    snap = {}
+    for t, root in cfgmod.roots(cfgmod.load()).items():
+        root = str(root)
+        n = 0
+        for _dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d != ".git"]
+            n += len(filenames)
+        head = subprocess.run(["git", "-C", root, "rev-list", "--count", "HEAD"],
+                              capture_output=True, text=True)
+        snap[t] = (n, head.stdout.strip() if head.returncode == 0 else "0")
+    return snap
+
+
+def _gitify_source(home):
+    """Init a Git repo in the source folder (the migrate precondition)."""
+    subprocess.run(["git", "init"], cwd=src(home), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Fixture"], cwd=src(home), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "f@example.invalid"], cwd=src(home), capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=src(home), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=src(home), capture_output=True)
+
+
+def test_import_cli_dry_run_writes_nothing(home):
+    """P0: `import --dry-run` must not copy to source, commit, or record the import."""
+    put(src(home) / "Plan D.md", "# Plan D\n")
+    scan()
+    doc_id = engine.Library().resolve("Plan D.md")[0].id
+    os.remove(src(home) / "Plan D.md")  # source gone (as after a sweep): import exists to bring it back
+
+    before = _archive_snapshot(home)
+    before_sc = dict(engine.Library().resolve(doc_id)[0].sc)  # last_import_sha256 is set at scan time
+    r = run_cli(home, "import", doc_id, "--dry-run")
+    assert r.returncode == 0
+    assert "import preview" in r.stdout
+    assert "source exists: False" in r.stdout
+    assert not (src(home) / "Plan D.md").exists(), "dry-run must not recreate the source file"
+    assert _archive_snapshot(home) == before, "dry-run must not change the archives"
+    d2 = engine.Library().resolve(doc_id)[0]
+    assert d2.sc == before_sc, "dry-run must not modify the sidecar"
+
+
+def test_import_cli_dry_run_conflict_is_honest(home):
+    """P0: a diverged source in dry-run reports CONFLICT (rc 5), writes nothing, and
+    never suggests a --force flag that no import/restore surface has."""
+    put(src(home) / "Plan E.md", "# Plan E\n")
+    scan()
+    doc_id = engine.Library().resolve("Plan E.md")[0].id
+    r = run_cli(home, "import", doc_id)
+    assert r.returncode == 0
+
+    put(src(home) / "Plan E.md", "# Plan E — diverged\n")
+    before = _archive_snapshot(home)
+    r = run_cli(home, "import", doc_id, "--dry-run")
+    assert r.returncode == 5
+    assert "CONFLICT" in r.stdout
+    assert "--force" not in r.stdout + r.stderr, "no --force flag exists on import"
+    assert _archive_snapshot(home) == before
+
+
+def test_migrate_engine_dry_run_audits_without_writing(home):
+    """P0: migrate (default, dry) audits only — was: keep_existing ignored, always imported."""
+    put(src(home) / "Plan A.md", "# Plan A\n")
+    scan()
+    _gitify_source(home)
+    put(src(home) / "Brand New.md", "# Brand New\n")
+
+    before = _archive_snapshot(home)
+    audit, imported = engine.migrate_existing_git_repo(engine.Library())
+    assert imported == 0, "dry-run migrate must not import"
+    assert [w["path"] for w in audit["would_import"]] == ["Brand New.md"]
+    assert _archive_snapshot(home) == before, "dry-run migrate must not change the archives"
+
+
+def test_migrate_cli_dry_run_writes_nothing(home):
+    """P0: CLI `migrate` without --apply previews only."""
+    put(src(home) / "Plan A.md", "# Plan A\n")
+    scan()
+    _gitify_source(home)
+    put(src(home) / "Brand New.md", "# Brand New\n")
+
+    before = _archive_snapshot(home)
+    r = run_cli(home, "migrate")
+    assert r.returncode == 0
+    assert "migration preview" in r.stdout
+    assert "would import: 1" in r.stdout
+    assert _archive_snapshot(home) == before, "migrate without --apply must not write the archives"
+
+
+def test_migrate_cli_apply_imports(home):
+    """Companion pin: `migrate --apply` still imports missing files."""
+    put(src(home) / "Plan A.md", "# Plan A\n")
+    scan()
+    _gitify_source(home)
+    put(src(home) / "Brand New.md", "# Brand New\n")
+
+    r = run_cli(home, "migrate", "--apply")
+    assert r.returncode == 0
+    assert "migration applied" in r.stdout
+    assert engine.Library().resolve("Brand New.md"), "applied migrate must have imported the file"
+
+
+def test_settings_set_invalid_does_not_persist(home):
+    """P0: `settings set` with a value that fails validation must not write config.json
+    (was: saved first, validated after — leaving every later command failing)."""
+    r = run_cli(home, "settings", "set", "interval_seconds", "10")
+    assert r.returncode == 2
+    assert "interval_seconds" in r.stderr
+
+    r = run_cli(home, "settings", "set", "remote_push", "banana")
+    assert r.returncode == 2
+
+    r2 = run_cli(home, "settings", "show")
+    assert r2.returncode == 0, "a rejected set must not brick the config"
+    cfgp = home / ".config" / "lasting-plans" / "config.json"
+    if cfgp.exists():
+        cfg = json.loads(cfgp.read_text())
+        assert cfg.get("interval_seconds") != 10
+        assert cfg.get("remote_push") != "banana"
+
+
+def test_settings_set_valid_persists(home):
+    """Companion pin: the valid path still persists and reads back."""
+    r = run_cli(home, "settings", "set", "interval_seconds", "900")
+    assert r.returncode == 0
+    r2 = run_cli(home, "settings", "show")
+    assert r2.returncode == 0
+    assert "900" in r2.stdout
+
+
+def test_menu_blank_enter_reprints_and_q_quits(home, monkeypatch, capsys):
+    """P0: blank Enter reprints the menu (only q/quit/EOF quit); it must not act or exit."""
+    put(src(home) / "Plan A.md", "# Plan A\n")
+    scan()
+    from lasting_plans import cli
+    answers = iter(["", "q"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    rc = cli.menu(cli.build_parser())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.count("Status dashboard") >= 2, "blank Enter must reprint the menu, not quit"
+
+
+def test_menu_blank_param_cancels_action(home, monkeypatch, capsys):
+    """P0: a blank required parameter cancels the action instead of running it with an empty token."""
+    put(src(home) / "Plan A with needle.md", "# Plan A\n")
+    scan()
+    from lasting_plans import cli
+    answers = iter(["4", "", "q"])  # 4 = search (query), blank answer, quit
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    rc = cli.menu(cli.build_parser())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "cancel" in out.lower(), "blank parameter must cancel, not run the action"
+    assert "needle" not in out, "the canceled action must not have run"

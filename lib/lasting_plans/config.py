@@ -65,6 +65,11 @@ def load():
         if not isinstance(user, dict):
             raise ConfigError("config %s is not a JSON object" % p)
         cfg.update(user)
+    return validate(cfg)
+
+
+def validate(cfg):
+    """Raise ConfigError unless cfg satisfies every key type and value constraint."""
     for k, t in TYPES.items():
         if not isinstance(cfg.get(k), t):
             raise ConfigError("config key %r has wrong type %s" % (k, type(cfg.get(k)).__name__))

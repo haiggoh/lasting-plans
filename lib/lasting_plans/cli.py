@@ -465,18 +465,22 @@ def cmd_settings(args):
         out(args, "%s settings (%s)\n" % (PREFIX, cfgmod.config_path()) +
             "\n".join("  %-20s %s" % (k, json.dumps(v)) for k, v in sorted(cfg.items())), cfg)
         return 0
+    candidate = dict(cfg)
     if args.action == "set":
         if not args.key or args.value is None:
             print("usage: lasting-plans settings set KEY VALUE", file=sys.stderr)
             return 2
-        cfg[args.key] = cfgmod.parse_value(args.key, args.value)
+        candidate[args.key] = cfgmod.parse_value(args.key, args.value)
     elif args.action == "reset":
         if not args.key or args.key not in cfgmod.DEFAULTS:
             print("usage: lasting-plans settings reset KEY", file=sys.stderr)
             return 2
-        cfg[args.key] = cfgmod.DEFAULTS[args.key]
-    cfgmod.save(cfg)
-    cfgmod.load()  # validate what we wrote
+        candidate[args.key] = cfgmod.DEFAULTS[args.key]
+    else:
+        return 2
+    cfgmod.validate(candidate)  # before any write: a rejected value must not be persisted
+    cfgmod.save(candidate)
+    cfg = candidate
     print("%s: %s = %s" % (PREFIX, args.key, json.dumps(cfg[args.key])))
     if args.key in ("scheduler_enabled", "interval_seconds", "source_dir", "plans_root", "playbooks_root") and scheduler.state().get("installed"):
         ok, msg = (scheduler.install(LIB_DIR) if cfg["scheduler_enabled"] else scheduler.uninstall())
@@ -526,10 +530,8 @@ def cmd_setup(args):
 def cmd_import(args):
     """Import a document from archive to source folder (reverse import)."""
     lib = engine.Library()
-    result, sha = engine.import_to_source(lib, args.ref, force_type="playbook" if args.force_playbook else None)
-    if "error" in result:
-        print("%s: %s" % (PREFIX, result["error"]), file=sys.stderr)
-        return 2
+    result, sha = engine.import_to_source(lib, args.ref, force_type="playbook" if args.force_playbook else None,
+                                          apply=not args.dry_run)
     if args.dry_run:
         if result.get("conflict"):
             print("%s: CONFLICT — source has diverged from last import" % PREFIX)
@@ -537,8 +539,11 @@ def cmd_import(args):
             print("  source hash: %s" % (result.get("source_sha256") or "n/a")[:16])
             print("  archive hash: %s" % (result.get("archive_sha256") or "n/a")[:16])
             print("  last common: %s" % (result.get("last_common_sha") or "n/a")[:16])
-            print("  Use --force-playbook to override (if playbook) or resolve manually")
+            print("  Resolve manually (no force-overwrite exists)")
             return 5
+        if "error" in result:
+            print("%s: %s" % (PREFIX, result["error"]), file=sys.stderr)
+            return 2
         print("%s import preview:" % PREFIX)
         print("  doc: %s" % result.get("archive_relpath", args.ref))
         print("  dest: %s" % result["dest_path"])
@@ -546,6 +551,9 @@ def cmd_import(args):
         if result.get("has_diverged"):
             print("  ⚠ source has diverged from last import")
         return 0
+    if "error" in result:
+        print("%s: %s" % (PREFIX, result["error"]), file=sys.stderr)
+        return 2
     print("%s: imported %s to %s" % (PREFIX, args.ref, result["dest_path"]))
     if sha:
         print("  commit: %s" % sha[:10])
@@ -621,7 +629,7 @@ def cmd_migrate(args):
         if audit.get("source_is_git_repo"):
             lines.append("  has remote: %s" % audit.get("has_remote"))
             lines.append("  files in source: %d" % len(audit.get("existing_files", [])))
-            lines.append("  would import: %d" % sum(1 for f in audit.get("existing_files", []) if f not in [s["path"] for s in audit.get("skipped", [])]))
+            lines.append("  would import: %d" % len(audit.get("would_import", [])))
             lines.append("  would skip: %d" % len(audit.get("skipped", [])))
         out(args, "\n".join(lines), audit)
     return 0
@@ -833,18 +841,28 @@ def menu(parser):
         except (EOFError, KeyboardInterrupt):
             print()
             return 0
-        if c.lower() in ("q", "quit", ""):
+        if c.lower() in ("q", "quit"):
             return 0
+        if not c:
+            continue
         if not c.isdigit() or not 1 <= int(c) <= len(MENU):
             print("pick 1-%d or q" % len(MENU))
             continue
         verb, _, params = MENU[int(c) - 1]
         argv = verb.split()
+        canceled = False
         try:
             for p in params:
-                argv.append(input("  %s: " % p).strip())
+                a = input("  %s: " % p).strip()
+                if not a:
+                    print("  canceled — blank %s (back to menu)" % p)
+                    canceled = True
+                    break
+                argv.append(a)
         except (EOFError, KeyboardInterrupt):
             print()
+            continue
+        if canceled:
             continue
         print("  $ lasting-plans %s" % " ".join(shlex.quote(a) for a in argv))
         try:
