@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.3.0] — 2026-11-14
+
+### Added — `plan-airtight`, the execution-safety layer for handed-off plans
+
+- New skill `skills/plan-airtight` (+ `references/plan-template.md`): hardens a plan — a NEW one
+  before handoff, or an EXISTING one — that will be executed by a different executor, crosses
+  permission boundaries (publish/merge/tag/release/deploy/spend), or touches shared or live state.
+  Adds the authority matrix, a forced Phase 0 preflight, receipts with a known-bad discriminant,
+  side-effect classification, and an adversarial review. Ported from run-to-completion's
+  `writing-execution-plans` (waypoint run-to-completion-rename; user decision 2026-11-13: name =
+  plan-airtight, home = lasting-plans); the rtc copy is removed in run-to-completion 1.6.0.
+- plugin.json description widened to the user-approved text ("plans that last — kept safe AND made
+  dependable"); the same text lands in get-haiggoh's marketplace.json + approved-descriptions
+  record, and the catalog's adds count moves to 2 skills.
+
+## [1.2.2] — 2026-10-31
+
 ## [1.2.2] — 2026-10-31
 
 ### Changed — description rewritten to current capabilities (rtc-1.0.0 plan, Part B2)
