@@ -92,13 +92,21 @@ def move_path(root, old, new):
     """`git mv` old -> new, via `<new>.lp-case-tmp` when only the case differs
     (a plain mv refuses the destination on a case-insensitive volume). Creates
     parent directories, re-cases a parent folder that is physically the same
-    directory, and prunes the now-empty parent directories of `old` up to root."""
+    directory, and prunes the now-empty parent directories of `old` up to root.
+
+    `git mv` refuses paths that are staged but never committed ("not under version
+    control"), so those go via os.rename + add instead."""
     new_abs = os.path.join(root, new)
     os.makedirs(os.path.dirname(new_abs) or root, exist_ok=True)
-    if old.casefold() == new.casefold():
+    head = git(root, "rev-parse", "--verify", "-q", "HEAD", check=False).stdout.strip()
+    in_head = bool(head) and bool(git(root, "ls-tree", head, "--", old, check=False).stdout.strip())
+    if old.casefold() == new.casefold() and in_head:
         tmp = new + ".lp-case-tmp"
         git(root, "mv", "--", old, tmp)
         git(root, "mv", "--", tmp, new)
+    elif old.casefold() == new.casefold():
+        os.rename(os.path.join(root, old), new_abs)
+        git(root, "add", "-A", "--", old, new, check=False)
     else:
         git(root, "mv", "--", old, new)
     old_parent, new_parent = os.path.dirname(old), os.path.dirname(new)

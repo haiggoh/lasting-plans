@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.2] — 2026-11-15 — hotfix
+
+- `gitrepo.move_path` no longer calls `git mv` for paths not in HEAD (staged-new or
+  untracked wedge copies): those move via os.rename + add. The live migration's
+  canonical re-case hit 'not under version control' on an untracked `_playbooks/… (2).md`.
+  Regression test: test_move_path_staged_but_never_committed (mutation-checked).
+
 ## [2.0.1] — 2026-11-15 — hotfix
 
 - `gitrepo.commit_paths` no longer fatals on staged-deleted paths (gone from index AND

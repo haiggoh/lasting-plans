@@ -251,3 +251,17 @@ def test_commit_paths_skips_add_for_staged_deleted_paths(repo):
     assert _git(repo, "status", "--porcelain").strip() == ""
     assert _git(repo, "ls-files").splitlines() == ["_PLAYBOOKS/B.md"]
     assert "wedge commit" in _git(repo, "log", "-1", "--format=%s")
+
+
+def test_move_path_staged_but_never_committed(repo):
+    """2.0.2: a staged-added file (in index, not in HEAD) must move via os.rename+add,
+    not `git mv` (which refuses 'not under version control')."""
+    d = repo / "old"
+    d.mkdir()
+    (d / "A.md").write_text("one\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "init")
+    (d / "B.md").write_text("untracked wedge copy\n", encoding="utf-8")   # untracked: the live case
+    gitrepo.move_path(str(repo), "old/B.md", "OLD/B.md")   # case-only: the live failure
+    assert (repo / "OLD" / "B.md").read_text(encoding="utf-8") == "untracked wedge copy\n"
+    assert "OLD" in os.listdir(repo) and "old" not in os.listdir(repo)
