@@ -6,23 +6,59 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task (native execution: the executor does every task, then one final whole-branch review). Steps use checkbox (`- [ ]`) syntax for tracking.
 
+## 🚨 System instructions for the executor — read first
+
+1. This plan is self-contained. You have NO chat history; the user's decisions are the numbered Spec list below, and they outrank anything you infer. Revalidate live state and tool schemas before any mutation; a tool-schema error ⇒ read the schema, never guess-retry.
+2. Before any file edit, write exactly three sentences linking Task 1 to the final outcome (Task 9 live and verified), then do Phase 0 (read-only).
+3. Work ONLY in the worktree `~/.wt/lp-self-heal` on branch `feat/self-healing-doctor`. Never switch the branch of `~/ClaudeWorkspace/lasting-plans` (the canonical checkout; tooling resolves through it). Never edit `~/.claude/plugins/cache/**` (installed copy; the next update silently reverts it).
+4. Native tools (Read/Grep/Glob/Edit/Write) for files; the shell for git, tests and running code. Edit anchors come from a FRESH Read, whole lines at exact indentation. Never rewrite a whole file you have only seen part of. No placeholder code, no `TODO` left in delivered code.
+5. Shell is **zsh**: quote globs, no `$40`-style literals or backticks inside double quotes, `$pipestatus` not `PIPESTATUS`. Write paths under home as `~/…` or `$HOME/…`, never expanded. Never pipe a test run into `tail`/`head` to judge it — redirect to a file and read the exit status (`…; echo EXIT:$?`).
+6. Stage by path only (`git add <paths>`), never `git add -A` / `git add .`; check `git diff --cached --stat` before each commit.
+7. **Commit trailer:** you run on a FREE model. Before EVERY commit, read `~/.claude/projects/-Users-bra0002h/memory/commit-attribution-by-model.md` and add the trailer for the model you actually run as (check your own model id), verbatim from that table, on the line BELOW `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Never invent a trailer; a model missing from the table ⇒ STOP and ask.
+8. Respect the authority matrix. Clearance for one boundary never implies the next. The highest boundary granted for this run is: **release 2.0.0 (merge, tag, release, plugin update) and the live migration — the live part only after the 🛑 USER GATE in Task 9.**
+9. Every task ends with a 🧪 Receipt (see "Receipts"). A failure ⇒ STOP that task, diagnose (systematic-debugging skill), fix, rerun, show both runs. Never weaken a test to pass; if a test contradicts a verified fact, inspect the test.
+10. Never put secrets in receipts (no `ps aux`, no env dumps, no printed tokens). Say "not tested" when something could not run safely — never imply it passed.
+11. Do NOT use the paid Agent/Task tool for anything in this plan (it bills a paid subagent). Delegation and the final review go through free-agents' stateless dispatch (`free-agent-tool.py`, see Task 8).
+12. If a step's premise turns out false (a file, function or path the plan names does not exist as described), STOP that step, write down what you found, and adapt only if the Spec still decides the outcome; otherwise ask the user in the session.
+
+## 📌 Context, evidence and unknowns
+
+Labels: **[live]** confirmed by a command on 2026-11-15 · **[dated]** observation that may have changed — re-check · **[decision]** user decision · **[unknown]** inspect before relying on it.
+
+- [live] Source repo: `~/ClaudeWorkspace/lasting-plans` (GitHub `haiggoh/lasting-plans`), default branch `main`, at `78d6a0c` when the worktree was cut; installed plugin 1.3.0; `VERSION` 1.3.0 but `lib/lasting_plans/__init__.py` says 1.2.2.
+- [live] Worktree `~/.wt/lp-self-heal`, branch `feat/self-healing-doctor`, holds only plan commits on top of `origin/main`.
+- [live] Banner source: `hooks/session-start.py:57-58` prints `⚠ N item(s) pending — run lasting-plans doctor` for ANY pending/error.
+- [live] The 10 pending items: commits in `~/Claude-playbooks` fail with "pathspec … did not match" (German git output: `Pfadspezifikation … stimmt mit keinen Git bekannten Dateien überein`) because the source folder was renamed `_PLAYBOOKS` → `_playbooks` (case only) while the archive index has `_PLAYBOOKS/`; `_free_relpath` (`engine.py:201`) produced `X (2).md` copies; 10 sidecars in `~/Claude-playbooks/.lasting-plans/docs/` are staged-modified and uncommitted.
+- [live] `~/.claude/plans` is itself a Git repo; it indexes `_playbooks/` (9 files), `core.ignorecase=true`; one unstaged deletion ` D "Plan — free-agents 0.36.0 oMLX session backend, backend detection, registry hygiene.md"`.
+- [live] `~/Claude-plans/_PLAYBOOKS` is an EMPTY folder (left behind by reclassify moves; carries an orange Finder tag via `.lasting-plans/folders.json`).
+- [live] Remotes: `plan` → `haiggoh/Claude-plans`, `playbook` → `haiggoh/Claude-playbooks`.
+- [live] Claude Code's cleanup (`cleanupPeriodDays`, unset ⇒ 30) deletes by mtime at session start ~daily, top-level files only: 147 subfolder `.md` files >30 days old survive, 0 top-level ones; all 115 deletions in `~/.claude/plans` git history are top-level; `~/.claude/.last-cleanup` = 2026-11-15 03:23.
+- [live] `~/.Trash` readable from the Claude Code Bash tool (0 items). [unknown] whether the launchd watcher (`~/.local/share/lasting-plans/lasting-plans-watch`) may read it (TCC) — the plan defers that case, never assumes.
+- [live] `/usr/bin/SetFile` present (needed to set creation dates).
+- [live] Existing CLI `migrate` (`cli.py:606`) = import a source Git repo; it is NOT the layout migration and stays unchanged.
+- [live] Interactive menu: `MENU` + `menu()` in `cli.py:799-854`.
+- [dated] 2 top-level plans were 25–30 days old; 2 of 84 top-level plans had every checkbox ticked.
+- [decision] Everything in the Spec list below.
+
 **Goal:** The backup looks exactly like the original (one archive mirroring `~/.claude/plans`, playbooks inside `_PLAYBOOKS/`), and Lasting Plans never puts routine maintenance on the user's plate: a background auto-repair resolves every foreseeable failure, and the SessionStart banner speaks only when a problem survived repeated automatic repair, or for a true emergency.
 
-**Architecture:** `Library` gets ONE archive root whose paths equal source-relative paths. `plan`/`playbook` stays as sidecar metadata (search/filter label), never a location. A self-running migration (`migrate.py`) merges the v1 playbook archive into the plan archive with full history, relocates every document to its source path, and retires the old archive (kept, never deleted). A new `repair.py` turns doctor checks + scan pending/errors into keyed issues, applies a safe, idempotent fixer per kind (the migration is one such kind), and keeps a persistence ledger that decides when the banner may speak. Watcher and SessionStart hook both call `repair.run()`.
+**Architecture:** `Library` gets ONE archive root whose paths equal source-relative paths. `plan`/`playbook` stays as sidecar metadata (search/filter label), never a location. A self-running migration (`migrate.py`) merges the v1 playbook archive into the plan archive with full history, relocates every document to its source path, and retires the old archive (the whole folder moved under the state dir, never deleted; `~/Claude-playbooks` becomes a symlink to `~/Claude-plans/_PLAYBOOKS`). A new `repair.py` turns doctor checks + scan pending/errors into keyed issues, applies a safe, idempotent fixer per kind (the migration is one such kind), and keeps a persistence ledger that decides when the banner may speak. Watcher and SessionStart hook both call `repair.run()`.
 
 **Tech Stack:** Python 3 stdlib, Git CLI (≥2.30), pytest (`pytest -n auto` for full runs), launchd.
 
-**Spec:** User decisions, this session (2026-11-15):
+**Spec:** User decisions made in the planning session (2026-11-15; you were not there — these are final):
 1. "not putting tasks on the user's plate unless it's an emergency … routine pending tasks … done via a script in the background without any user action."
 2. Banner only "if stuck and the doctor script has already been run automatically and the issue still isn't resolved"; the script should "resolve any kind of error of this type … safe enough to be run without explicit user permission at any time."
 3. Fix the case-only-rename bug in the same release. Folder spelling — SUPERSEDED by the user, 2026-11-15 04:02: the lowercase rename was "a misguided band-aid"; canonical folder names are UPPERCASE like `_ARCHIVED`: `_PLAYBOOKS`, and the source folder AND its Git entries in `~/.claude/plans` (which today index `_playbooks/`) are re-cased to `_PLAYBOOKS` (Task 3 step 0), the backup follows. The case-rename mechanism stays generic (it follows whatever the source spelling is).
-9. Sort moves are committed as moves in the source repo too (user, 2026-11-15: "yes for consistency").
-10. The backup does NOT get `_SAVED-FROM-CLEANUP/`: that folder is only a workaround against the cleanup, which never runs in the backup. Rescued docs keep their top-level path in the backup.
 4. Layout: "One mirrored archive" — `~/Claude-plans` mirrors `~/.claude/plans`, playbooks in `_PLAYBOOKS/`, type kept only as a label, `~/Claude-playbooks` history merged in, never deleted. Superseded detail (user, 2026-11-15): no retired note — `~/Claude-playbooks` becomes a symlink to `~/Claude-plans/_PLAYBOOKS`, the old folder is moved (kept) under the state dir, the GitHub repo is left untouched.
 5. "One combined release" → 2.0.0 — and "All in 2.0.0" again for items 6–8.
 6. Deletions in the BACKUP: "Restore unless trashed" — a vanished archive document is restored from Git unless a same-content file sits in `~/.Trash` (the user deleted it in Finder); other policies selectable.
 7. Completion: "Executor marks + strong signals" — executor runs `lasting-plans complete <plan>` as its closing step; automatic for unambiguous signals after 3 quiet days. Completed plans move to `_ARCHIVED/` in the source AND the backup. User addition: plans written with `plan-airtight` (now owned by lasting-plans) carry a canonical in-file signal that tells the executor to mark completion — in-file, not a naming scheme.
 8. Sorting: "Yes, both" — top-level playbook-classified docs move into `_PLAYBOOKS/`; playbooks headed HISTORICAL move to `_ARCHIVED/`; a user's move back is a sticky override.
+9. Sort moves are committed as moves in the source repo too (user, 2026-11-15: "yes for consistency").
+10. The backup does NOT get `_SAVED-FROM-CLEANUP/`: that folder is only a workaround against the cleanup, which never runs in the backup. Rescued docs keep their top-level path in the backup.
+11. Cleanup protection: move at-risk top-level plans BEFORE Claude Code's 30-day cleanup deletes them; put back afterwards only as the safety net; dates and colour labels must survive every write-back (Task 5c).
+12. The behaviour opt-outs are offered in the existing interactive menu (Task 6).
 
 ## Global Constraints
 
@@ -40,20 +76,36 @@
 - Version 2.0.0 on EVERY surface: `VERSION`, `.claude-plugin/plugin.json`, `lib/lasting_plans/__init__.py` (currently drifted at 1.2.2), `CHANGELOG.md`.
 - Tests use the synthetic-HOME `home` fixture; case tests `pytest.skip` when the tmp FS is case-sensitive.
 
-## Authority & preflight (executor = this session)
+## 🔒 Authority matrix
 
-| Action | Without asking? |
-|---|---|
-| Edit/commit on `feat/self-healing-doctor` in `~/.wt/lp-self-heal` | yes |
-| rtc-ship: merge to `main`, tag `v2.0.0`, release, `claude plugin update lasting-plans` | yes (user chose a combined release) |
-| Migrate the live `~/Claude-plans` / `~/Claude-playbooks` | yes, only after Task 9 Step 1 backup receipt |
-| Fast-forward push to `haiggoh/Claude-plans` | yes (the existing auto-push behaviour) |
-| Move live `~/Claude-playbooks` into `retired-archives/` and symlink it | yes, after the Task 9 backup receipt (user decision) |
-| Any write to `haiggoh/Claude-playbooks` on GitHub | no (left untouched) |
-| Moves + their `--only` commits in the live `~/.claude/plans` (re-casing `_playbooks` → `_PLAYBOOKS`, sort moves, before-cleanup moves, put-backs) | yes, after Task 9 Step 7's dry-run list is shown to the user (user decisions: all automatic, all committed as moves) |
-| Force-push, move a published tag, delete any archive folder/repo, archive the GitHub repo | no |
+| Operation | Status | Gate / evidence |
+|---|---|---|
+| Read-only inspection anywhere | allowed now | — |
+| Edit + commit on `feat/self-healing-doctor` in `~/.wt/lp-self-heal` | allowed now | staged diff reviewed per commit, trailer per rule 7 |
+| Push `feat/self-healing-doctor` to `origin` | allowed after gate | full suite green (Task 6 receipt) |
+| Merge to `main`, tag `v2.0.0`, GitHub release, `claude plugin update lasting-plans` | allowed after gate | Tasks 1–7 receipts + Task 8 review findings resolved; done ONLY via run-to-completion's `ship` skill |
+| Back up live archives (bundles + copies) | allowed after gate | 2.0.0 installed (Task 8 receipt) |
+| Any live write: migrating `~/Claude-plans`/`~/Claude-playbooks`, moving `~/Claude-playbooks` + symlink, commits/moves in `~/.claude/plans`, fast-forward push to `haiggoh/Claude-plans` | allowed after gate | Task 9 backup receipt AND the 🛑 USER GATE (user typed `go` after seeing the dry-run list) |
+| `scheduler.install` / restarting the lasting-plans launchd watcher | allowed after gate | only as part of the installed 2.0.0 migration (step 1), never by hand |
+| Installing project dependencies | needs user permission | none are expected (stdlib only); pytest/xdist already available — verify in Phase 0 |
+| Any write to `haiggoh/Claude-playbooks` on GitHub; archiving a GitHub repo | prohibited | — |
+| Force-push, moving/deleting a published tag, deleting any archive folder/repo or user file, `git add -A`, editing the plugin cache, switching the canonical checkout's branch | prohibited | — |
+| Killing processes other than ones this run started; touching ports 4141-4151 / 8000-8010 (they serve live sessions, possibly this one) | prohibited | — |
+| Paid Agent/Task subagents | prohibited | free dispatch instead |
 
-Phase 0 (before Task 1): worktree `git status --porcelain` empty; `git ls-remote --tags origin v2.0.0` empty; `pytest -n auto tests` green on the branch base — record the pass count.
+## 🛑 Phase 0 — forced preflight (read-only)
+
+1. Three strategy sentences (rule 2).
+2. `cd ~/.wt/lp-self-heal && git status --porcelain && git branch --show-current && git log --oneline -3` → empty status, `feat/self-healing-doctor`, top commit a `docs(plan)` commit.
+3. `git -C ~/ClaudeWorkspace/lasting-plans status --porcelain --branch` → still `main`, record dirtiness (do not touch it).
+4. `git ls-remote --tags origin v2.0.0` → empty (tag free); `git fetch -q && git log --oneline HEAD..origin/main` → empty (no one advanced `main`; if not empty: rebase the branch on it and re-run step 5).
+5. Baseline: `python3 -m pytest -n auto tests > $TMPDIR/lp-baseline.txt 2>&1; echo EXIT:$?` → record EXIT and the pass/skip counts from the file (`-rs` shows skip reasons). If xdist is missing, run without `-n auto` and say so.
+6. Re-observe the [live] facts in the Context list that Tasks 1–3 depend on (`hooks/session-start.py:57-58`, `engine.py:201`, `cli.py:606`, `cli.py:799-854`); any mismatch ⇒ rule 12.
+**🧪 Receipt 0:** the outputs above, the baseline EXIT and counts.
+
+## 🧪 Receipts (every task)
+
+Each task ends with: the exact test command, its EXIT status read from a file (never through a pipe), the pass/fail/skip counts, `git log --oneline -1` of the task's commit, and one state assertion. **Discriminant rule:** each task's new tests must be shown FAILING before the implementation (TDD red — that run is part of the receipt). For Tasks 1, 3, 5c and 6 additionally show one isolated temporary mutation turning a key test red after it went green (e.g. drop the `--only` in `source_move`, or skip the `index_case` mapping), then revert it: commit the green state FIRST, make the one-line mutation, run with `PYTHONDONTWRITEBYTECODE=1` after clearing `__pycache__`, then `git restore <that file>` and confirm `git status --porcelain` is empty. Never use `git stash` (the stash stack is shared with other sessions); never mutate live files.
 
 ## Review Focus
 
@@ -220,15 +272,16 @@ Metadata (user-reported earlier losses when restoring via plain Git): Git stores
 
 ### Task 8: Ship
 
-- [ ] One fresh whole-branch reviewer (most capable model) on `git diff origin/main...`; address findings.
-- [ ] run-to-completion `ship` (rtc-ship + `rtc-ship.json`): gates, merge to `main`, tag `v2.0.0`, release, `claude plugin update lasting-plans`. Receipts: `git ls-remote --tags origin v2.0.0` prints a SHA; installed version reads 2.0.0.
+- [ ] Whole-branch review by a DIFFERENT model via stateless free dispatch (no paid subagent): resolve the bin with `ls ~/.claude/plugins/cache/haiggoh/free-agents/ | sort -V | tail -1`, run its `bin/free-agent-tool.py --list` to pick the strongest available model that is NOT the one you run as, then send `{"prompt": "<review brief: correctness bugs, data-loss risks, the Spec list, the Global Constraints>", "files": [<the diff saved to a file via git diff origin/main... > $TMPDIR/lp-diff.patch, plus the plan>]}`. Repeat `model_used`/`route` from the result in your reply. Address every finding (fix, or write down why not). If no free route works: say so plainly and STOP before shipping — ask the user.
+- [ ] Push the branch, then run-to-completion's `ship` skill (rtc-ship + `rtc-ship.json`; worktree `~/.wt/lp-self-heal`, NEVER the canonical checkout): gates, merge to `main`, tag `v2.0.0`, release, `claude plugin update lasting-plans`. Let rtc-ship's own gate watcher handle a slow/stalled gate; do not hand-run around it. **🧪 Receipt:** `git ls-remote --tags origin v2.0.0` prints a SHA; `git ls-remote origin main` equals the merge commit; `claude plugin list` (or the plugin's VERSION in the newest cache dir) reads 2.0.0. **This is the release boundary; nothing past it runs until Task 9's gates.**
 
 ### Task 9: Live migration + dogfood (live state — backup first)
 
 - [ ] Step 1 — backup receipt, independent of the migration's own: `git bundle create` for `~/Claude-plans` and `~/Claude-playbooks` (`--all`) into `~/Claude-plans-premigration-2026-11-15/`, plus `cp -R` of both `.lasting-plans/` dirs (the live sidecars are uncommitted); `git bundle verify` OK for both.
-- [ ] Step 2: INSTALLED `lasting-plans migrate --dry-run` → lists the 10 wedged playbook docs, the merge, the relocations; `git status` of both repos unchanged afterwards.
+- [ ] Step 2: INSTALLED `lasting-plans repair --dry-run` (NOT `migrate` — that is the pre-existing source-repo import command, `cli.py:606`) → lists the 10 wedged playbook docs, the merge, the relocations, the re-casing, sort moves, before-cleanup moves and put-backs; `git status --porcelain` of `~/Claude-plans`, `~/Claude-playbooks` and `~/.claude/plans` byte-identical before/after (save each to a file in `$TMPDIR` and `cmp`).
+- [ ] **🛑 USER GATE:** paste that whole dry-run list into the reply, then STOP and wait for the user to type `go` in this session. No live write before it. Anything else they type is a correction: apply it to the plan first.
 - [ ] Step 3: INSTALLED `lasting-plans repair` → exit 0.
-- [ ] Step 4 — known-bad discriminants: `~/Claude-plans/_PLAYBOOKS/` holds every file in `~/.claude/plans/_PLAYBOOKS/` (`diff -rq` on documents shows no missing files); `git -C ~/Claude-plans ls-files | grep -c "_PLAYBOOKS/\| (2)\.md"` = 0 unless a listed collision; both repos `git status --porcelain` empty; `readlink ~/Claude-playbooks` = `~/Claude-plans/_PLAYBOOKS` and `ls ~/Claude-playbooks/` lists the playbooks; `diff -rq` of the moved `retired-archives/Claude-playbooks-*` against the Step 1 copy shows only the pre-migration commit's changes; `git ls-remote` shows the Claude-plans remote at the local HEAD.
+- [ ] Step 4 — known-bad discriminants: `~/Claude-plans/_PLAYBOOKS/` holds every file in `~/.claude/plans/_PLAYBOOKS/` (`diff -rq` on documents shows no missing files); `git -C ~/Claude-plans ls-files | grep -c "^_playbooks/\| (2)\.md"` = 0 unless a listed collision (LOWERCASE `_playbooks` is the bad spelling; `_PLAYBOOKS/` must be present: `git -C ~/Claude-plans ls-files | grep -c "^_PLAYBOOKS/"` ≥ 10); both repos `git status --porcelain` empty; `readlink ~/Claude-playbooks` = `~/Claude-plans/_PLAYBOOKS` and `ls ~/Claude-playbooks/` lists the playbooks; `diff -rq` of the moved `retired-archives/Claude-playbooks-*` against the Step 1 copy shows only the pre-migration commit's changes; `git ls-remote` shows the Claude-plans remote at the local HEAD.
 - [ ] Step 5: `lasting-plans doctor` → every check ✓, with the auto-repair section listing what it did.
 - [ ] Step 6 — dogfood the banner: run the INSTALLED `hooks/session-start.py` twice → the second run prints nothing.
 - [ ] Step 6b — canonical spelling: after the migration, `ls ~/.claude/plans` shows `_PLAYBOOKS` (not `_playbooks`); `git -C ~/.claude/plans ls-files | cut -d/ -f1 | sort -u | grep -i playbooks` prints only `_PLAYBOOKS`; `git -C ~/.claude/plans log -1 --name-status` for the re-case commit shows only `R` lines; same spelling in `git -C ~/Claude-plans ls-files`; `readlink ~/Claude-playbooks` ends in `/_PLAYBOOKS`.
@@ -236,4 +289,40 @@ Metadata (user-reported earlier losses when restoring via plain Git): Git stores
 - [ ] Step 7a — before-cleanup moves: the same dry-run lists the top-level plans now at risk (2 were 25–30 days old on 2026-11-15); after the run, for one of them compare `stat -f '%SB %Sm'` and `xattr -p com.apple.metadata:_kMDItemUserTags` before/after → identical.
 - [ ] Step 7c — backup has no rescue folder: `ls ~/Claude-plans | grep -ci saved-from-cleanup` = 0, and each rescued doc is still at its top-level path in `~/Claude-plans`.
 - [ ] Step 7b — cleanup put-back: the same dry-run lists the backfill (past cleanup losses, e.g. from commits `19329ae`, `8bd275e`) and the current unstaged deletion (`Plan — free-agents 0.36.0 oMLX session backend…`); show the list to the user BEFORE running. After the run: `git -C ~/.claude/plans status --porcelain` no longer shows ` D` for it, `git -C ~/.claude/plans log -1 --name-status` shows the `R` (or backfill `A`) into `_SAVED-FROM-CLEANUP/`, and the user's other uncommitted changes in that repo are still uncommitted.
-- [ ] Step 8 — close this plan with its own mechanism: `lasting-plans complete "<this plan>"` → Status `completed`, file under `_ARCHIVED/`.
+- [ ] Step 8 — close this plan. This file lives in the REPO (`docs/superpowers/plans/`), not in `~/.claude/plans`, so `lasting-plans complete` does not apply to it (it acts on the plans folder). Instead: on a new branch `docs/plan-2.0.0-complete` from `origin/main`, change `**Status:** approved` to `**Status:** completed`, commit (trailer rule 7), push the branch. Do NOT merge it (beyond this run's boundary; the user merges docs branches). Exercise `lasting-plans complete` on a real plan only if the user names one at the 🛑 USER GATE.
+
+## ⚠️ Side-effect classification
+
+| Step | Side effect | How routine verification avoids it |
+|---|---|---|
+| Every test | writes to HOME, git repos, launchd, Trash | `home` fixture (synthetic HOME, `LASTING_PLANS_*_DIR`, `GIT_CONFIG_GLOBAL`); `scheduler` functions monkeypatched — no test may call real `launchctl`; Trash = a fixture dir via a module-level path the tests override |
+| `source_move` / `put_back` / `canonicalize_folders` | commits in the user's `~/.claude/plans` repo | tests use a fixture git repo; live only after the USER GATE |
+| migration step 1 | restarts the live watcher | mocked in tests; live only through the installed 2.0.0 `repair` |
+| migration step 6 | moves `~/Claude-playbooks`, creates a symlink | fixture only; live after backup + gate; nothing deleted |
+| remote auto-push | network push to `haiggoh/Claude-plans` | tests: no remote configured; live: fast-forward only, never force |
+| `--dry-run` paths | must write nothing | proven by `test_dry_run_changes_nothing` / `test_migration_dry_run_writes_nothing` (byte-compare of status + config) BEFORE the live dry-run is trusted |
+| Task 8 ship | merge, tag, release, plugin update | rtc-ship only; receipts via `git ls-remote` |
+
+## 🧨 Adversarial review
+
+- Shortcut: run Task 9 from the worktree code instead of the INSTALLED 2.0.0 → false success: live migration "works" → harm: the installed watcher (still 1.3.0 or a different build) re-splits the archive → rule: Task 9 runs only the installed `lasting-plans` → detect: Task 8 receipt shows 2.0.0 installed; `which lasting-plans` / the hook path printed in Step 2.
+- Shortcut: trust `repair --dry-run` without its test → false: the list looks right → harm: a dry run that writes moves live files before the gate → rule: dry-run tests green first → detect: the `cmp` of the three `git status` snapshots in Step 2.
+- Shortcut: `git add -A` in `~/.claude/plans` or a commit without `--only` → false: clean `git status` → harm: the user's unrelated uncommitted plans get committed (or a sweep deletion gets recorded as a delete) → rule: only `source_move` writes there → detect: the planted-unrelated-change assertions in Tasks 5b/5c and Step 7b.
+- Shortcut: fix the uppercase/lowercase checks by flipping the assertion until green → false: green suite → harm: the exact inversion already caught once in this plan (Step 4) → rule: rule 9 (never weaken a test; inspect it) → detect: Step 6b's spelling checks against `ls` and `git ls-files`.
+- Shortcut: pipe `pytest … | tail` → false: exit 0 from `tail` → harm: a red suite ships → rule 5 → detect: receipts carry `EXIT:` read from a file.
+- Shortcut: restore metadata only on the new paths and forget the existing `restore` command → false: new tests green → harm: the user's reported date/label loss recurs → detect: `test_restore_to_source_restores_metadata`.
+- Shortcut: guess the commit trailer from the model name → harm: wrong attribution in published history (never rewritten) → rule 7 → detect: `git log -1 --format=%B` in every receipt.
+- Shortcut: edit the plugin cache to "test the installed copy" → harm: silently reverted, nothing shipped → prohibited in the matrix.
+- Shortcut: paid Agent tool for the review → harm: spend on a free run → rule 11.
+- Lower permission read as higher: "push the branch" is not "merge"; "merge" is not "migrate live data" → the matrix gates each separately; the USER GATE is the only route into live writes.
+- Not safely testable: real TCC behaviour of the launchd watcher on `~/.Trash` (handled by deferral, not by a test); real Claude Code cleanup timing (simulated by mtimes).
+
+## 🏁 Final review and delivery (answer each in the final reply)
+
+1. What is implemented and shipped (tag, release URL) versus only planned?
+2. Which receipts ran (Phase 0, Tasks 1–9) — and which tests did NOT run, with the reason?
+3. Is user work preserved: `~/.claude/plans` other uncommitted changes untouched; the backups from Task 9 Step 1 present and `git bundle verify` OK?
+4. Were live or global systems touched beyond the matrix? (Expected: only the gated Task 9 writes and the fast-forward push.)
+5. Do the menu (`lasting-plans` on a TTY → Behaviour settings) and `settings show` show the same labels?
+6. Did the run stop at its boundary (no merge of `docs/plan-2.0.0-complete`, nothing on `haiggoh/Claude-playbooks`)?
+7. Was this delivered plan file re-read after the last edit?
