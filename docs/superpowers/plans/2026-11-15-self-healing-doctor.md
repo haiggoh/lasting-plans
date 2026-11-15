@@ -1,5 +1,9 @@
 # One Mirrored Archive + Self-Healing Doctor (lasting-plans 2.0.0) Implementation Plan
 
+**Status:** approved
+
+> **Lasting Plans:** when every task below is done, set the Status line to `completed` by running `lasting-plans complete "<this file>"` as the closing step.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task (native execution: the executor does every task, then one final whole-branch review). Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The backup looks exactly like the original (one archive mirroring `~/.claude/plans`, playbooks inside `_playbooks/`), and Lasting Plans never puts routine maintenance on the user's plate: a background auto-repair resolves every foreseeable failure, and the SessionStart banner speaks only when a problem survived repeated automatic repair, or for a true emergency.
@@ -13,7 +17,10 @@
 2. Banner only "if stuck and the doctor script has already been run automatically and the issue still isn't resolved"; the script should "resolve any kind of error of this type … safe enough to be run without explicit user permission at any time."
 3. Fix the case-only-rename bug in the same release; folder spelling: "whichever works best with git" → follow the SOURCE spelling everywhere (`~/.claude/plans`'s own Git repo indexes `_playbooks/`).
 4. Layout: "One mirrored archive" — `~/Claude-plans` mirrors `~/.claude/plans`, playbooks in `_playbooks/`, type kept only as a label, `~/Claude-playbooks` history merged in, never deleted. Superseded detail (user, 2026-11-15): no retired note — `~/Claude-playbooks` becomes a symlink to `~/Claude-plans/_playbooks`, the old folder is moved (kept) under the state dir, the GitHub repo is left untouched.
-5. "One combined release" → 2.0.0.
+5. "One combined release" → 2.0.0 — and "All in 2.0.0" again for items 6–8.
+6. Deletions in the BACKUP: "Restore unless trashed" — a vanished archive document is restored from Git unless a same-content file sits in `~/.Trash` (the user deleted it in Finder); other policies selectable.
+7. Completion: "Executor marks + strong signals" — executor runs `lasting-plans complete <plan>` as its closing step; automatic for unambiguous signals after 3 quiet days. Completed plans move to `_ARCHIVED/` in the source AND the backup. User addition: plans written with `plan-airtight` (now owned by lasting-plans) carry a canonical in-file signal that tells the executor to mark completion — in-file, not a naming scheme.
+8. Sorting: "Yes, both" — top-level playbook-classified docs move into `_playbooks/`; playbooks headed HISTORICAL move to `_ARCHIVED/`; a user's move back is a sticky override.
 
 ## Global Constraints
 
@@ -22,6 +29,9 @@
 - Visible, not hidden: every fix/migration step is logged (watcher log + `<state_dir>/repairs.jsonl`) and shown in `lasting-plans doctor` and `status`. Native opt-out: setting `auto_repair` (default `true`).
 - Config: new `archive_root` (default `~/Claude-plans`), `remote` (single URL or null), `auto_repair: bool = True`, `alert_after_hours: int = 24` (min 1), `alert_min_attempts: int = 3` (min 1), `layout: int` (absent/1 = v1, 2 = migrated), `retired_archives: list[str]`. Legacy `plans_root` → `archive_root`, `playbooks_root` → `retired_archives`, `remotes.plan` → `remote` (read-compatible; written only by the migration).
 - Never create an archive folder that holds no documents; prune folders emptied by a move.
+- Further settings: `archive_deletions: "restore-unless-trashed" | "restore" | "honor"` (default first), `auto_sort: bool = True`, `archive_subdir: str = "_ARCHIVED"`, `playbooks_subdir: str = "_playbooks"` (matched casefold against the existing source folder), `complete_quiet_days: int = 3` (min 0).
+- Canonical completion signal (exact, first 40 lines of a doc): a line `**Status:** <value>`; values `draft | approved | in-progress | completed`; `completed` (also `done`, `shipped`, case-insensitive) = complete. Plus a blockquote line starting `> **Lasting Plans:**` naming the closing command.
+- Moves in the SOURCE (`~/.claude/plans`, the user's own Git repo) are plain `os.rename` — never `git add`/stage/commit there; never move a file modified less than 10 minutes ago (live plan-mode use); collisions use `_free_relpath`.
 - Alert copy (exact): `⚠ %d problem(s) auto-repair could not fix (since %s) — details: \`lasting-plans doctor\``, date `YYYY-MM-DD`.
 - Hook always exits 0. Every script/subcommand supports `--help` and runs nothing with it.
 - Version 2.0.0 on EVERY surface: `VERSION`, `.claude-plugin/plugin.json`, `lib/lasting_plans/__init__.py` (currently drifted at 1.2.2), `CHANGELOG.md`.
@@ -37,6 +47,7 @@
 | Fast-forward push to `haiggoh/Claude-plans` | yes (the existing auto-push behaviour) |
 | Move live `~/Claude-playbooks` into `retired-archives/` and symlink it | yes, after the Task 9 backup receipt (user decision) |
 | Any write to `haiggoh/Claude-playbooks` on GitHub | no (left untouched) |
+| Tidy moves in the live `~/.claude/plans` | yes, after Task 9 Step 7's dry-run list is shown to the user (user decision: sorting is automatic) |
 | Force-push, move a published tag, delete any archive folder/repo, archive the GitHub repo | no |
 
 Phase 0 (before Task 1): worktree `git status --porcelain` empty; `git ls-remote --tags origin v2.0.0` empty; `pytest -n auto tests` green on the branch base — record the pass count.
@@ -115,7 +126,7 @@ Phase 0 (before Task 1): worktree `git status --porcelain` empty; `git ls-remote
 | `migration_pending` | `migrate.needed(cfg)` | `migrate.run(lib)` |
 | `uncommitted` | pending `uncommitted:` | `commit_paths` doc + sidecar |
 | `no_identity` | doctor identity ✗ | repo-LOCAL `user.name`/`user.email` from `git config --global`, else `Lasting Plans` / `lasting-plans@localhost` |
-| `archive_missing` | doctor "every archive document present" ✗ / pending "removed by hand" | `HEAD:<path>` exists → `git checkout HEAD -- <path>`; else an unclaimed file with `sha256 == archive_sha256` → repoint sidecar, commit; else unfixed |
+| `archive_missing` | doctor "every archive document present" ✗ / pending "removed by hand" | first an unclaimed file in the root with `sha256 == archive_sha256` → repoint sidecar, commit (it was moved, not deleted). Otherwise apply `archive_deletions`: `restore` → `git checkout HEAD -- <path>`; `honor` → mark sidecar `deleted_utc`, `deleted_by: "user"`, commit the removal; `restore-unless-trashed` → a same-sha256 file in `~/.Trash` ⇒ honor, else restore. If `~/.Trash` raises `PermissionError` (launchd TCC) ⇒ return `(False, "deferred: Trash unreadable here")` without counting an attempt; the SessionStart hook (inside Claude Code, Trash readable — verified 2026-11-15 from the Bash tool) decides on its next run. Tests: `test_fix_archive_missing_trashed_is_honoured`, `test_fix_archive_missing_rm_is_restored`, `test_fix_archive_missing_moved_is_repointed`, `test_fix_archive_missing_trash_unreadable_defers`, one per policy value. |
 | `sidecar_corrupt` | `lib.corrupt` | back up, `git checkout HEAD -- <sidecar>`; unfixed if HEAD lacks it |
 | `type_mismatch` | `engine.type_mismatches` | label-only `reclassify`, then `type_reason = "auto-reclassified by repair"` (a user's own reclassify stays sticky) |
 | `empty_folder` | archive dir with no docs and no tracked files | `os.rmdir` (only if truly empty) |
@@ -137,6 +148,21 @@ Phase 0 (before Task 1): worktree `git status --porcelain` empty; `git ls-remote
 
 - [ ] Step 1: failing tests: `test_run_fixes_and_journals`; `test_alert_needs_age_and_attempts` (5 attempts / 1 h ⇒ none; 3 attempts / 25 h ⇒ one); `test_emergency_alerts_immediately`; `test_resolved_issue_resets_first_seen`; `test_busy_lock_skips_without_counting`; `test_transient_never_alerts_early`; `test_corrupt_ledger_is_backed_up_and_reset`; `test_dry_run_changes_nothing`; `test_settings_parse` (`auto_repair off` → False; `alert_after_hours 0` → ConfigError).
 - [ ] Step 2: run → FAIL. Step 3: implement. Step 4: PASS. Step 5: commit by path: `feat(repair): ledger, alert policy, auto_repair setting`.
+
+### Task 5b: Completion + sorting (source and backup stay tidy)
+
+**Files:** Create `lib/lasting_plans/tidy.py`; modify `engine.py` (sidecar fields), `skills/plan-airtight/SKILL.md`, `skills/lasting-plans/SKILL.md`; Test: `tests/test_tidy.py` (create).
+
+**Interfaces — Produces:**
+- `tidy.status_of(text: str) -> str | None` — the canonical `**Status:**` value, lower-cased, or None.
+- `tidy.is_complete(doc, text, now) -> tuple[bool, str]` — True when (a) status ∈ {completed, done, shipped}, or (b) the doc has ≥1 checkbox and all are ticked, or (c) a playbook whose first heading or first 5 lines contain `HISTORICAL`; and for (b)/(c) and status-set-by-hand, the source is untouched ≥ `complete_quiet_days`. Reason string names the signal.
+- `tidy.complete(lib, path_or_id) -> str` — explicit: sets the Status line to `completed` (inserting one under the H1 if absent), moves the source to `<archive_subdir>/<same name>` immediately (no quiet wait), returns the new source path. CLI: `lasting-plans complete <path|id> [--dry-run]`.
+- `tidy.sort_pass(lib, now) -> list[event]` — run by `repair.run` when `auto_sort`: for each source doc NOT under `archive_subdir`: complete ⇒ move to `archive_subdir`; top-level doc classified `playbook` and not under `playbooks_subdir` ⇒ move into it. Skips docs with sidecar `sort_override: true`. The next scan sees each move as an ordinary move, so the backup follows (Task 2 mirroring).
+- Sticky override: every tidy move is recorded in the sidecar `tidy_moves: [{from, to, utc}]`; a later move by someone else of a doc OUT of where tidy put it sets `sort_override: true` (never re-moved).
+- `plan-airtight` SKILL.md: every plan it hardens MUST carry the canonical `**Status:**` line and the `> **Lasting Plans:**` closing-step line (exact format above), and its closing/receipt section ends with `lasting-plans complete "<plan path>"`. `lasting-plans` SKILL.md: "When you finish executing any plan, run `lasting-plans complete <plan>`; when you start one, set Status to `in-progress`."
+
+- [ ] Step 1: failing tests: `test_status_of_parses_canonical_line`; `test_explicit_complete_moves_now_and_sets_status`; `test_all_ticked_waits_quiet_days` (2 days ⇒ stays, 4 days ⇒ moves); `test_open_checkbox_never_moves`; `test_status_approved_never_moves`; `test_historical_playbook_archived`; `test_top_level_playbook_sorted_into_playbooks_subdir`; `test_recent_file_never_moved` (mtime 5 min ⇒ stays); `test_user_move_back_is_sticky`; `test_backup_mirrors_tidy_move` (after `sort_pass` + scan, archive has the doc under `_ARCHIVED/`, history follows); `test_source_git_repo_never_staged` (source is a git repo with the doc tracked ⇒ after the move `git diff --cached` is empty); `test_name_collision_in_archived`.
+- [ ] Step 2: run → FAIL. Step 3: implement; update both SKILL.md files. Step 4: `pytest tests/test_tidy.py -v` → PASS. Step 5: commit by path: `feat(tidy): completed plans to _ARCHIVED, playbooks to _playbooks, plan-airtight completion signal`.
 
 ### Task 6: Wire into watcher, hook, CLI; docs
 
@@ -170,3 +196,5 @@ Phase 0 (before Task 1): worktree `git status --porcelain` empty; `git ls-remote
 - [ ] Step 4 — known-bad discriminants: `~/Claude-plans/_playbooks/` holds every file in `~/.claude/plans/_playbooks/` (`diff -rq` on documents shows no missing files); `git -C ~/Claude-plans ls-files | grep -c "_PLAYBOOKS/\| (2)\.md"` = 0 unless a listed collision; both repos `git status --porcelain` empty; `readlink ~/Claude-playbooks` = `~/Claude-plans/_playbooks` and `ls ~/Claude-playbooks/` lists the playbooks; `diff -rq` of the moved `retired-archives/Claude-playbooks-*` against the Step 1 copy shows only the pre-migration commit's changes; `git ls-remote` shows the Claude-plans remote at the local HEAD.
 - [ ] Step 5: `lasting-plans doctor` → every check ✓, with the auto-repair section listing what it did.
 - [ ] Step 6 — dogfood the banner: run the INSTALLED `hooks/session-start.py` twice → the second run prints nothing.
+- [ ] Step 7 — dogfood tidy: INSTALLED `lasting-plans repair --dry-run` lists the tidy moves it would make in `~/.claude/plans` (expected: the 2 all-ticked plans if quiet ≥3 days, top-level playbook-classified docs, HISTORICAL playbooks); show that list to the user in the reply before the first live sort pass runs (first-run visibility; later passes are silent). Then run it and verify one moved plan appears under `~/Claude-plans/_ARCHIVED/` with `git log --follow` intact.
+- [ ] Step 8 — close this plan with its own mechanism: `lasting-plans complete "<this plan>"` → Status `completed`, file under `_ARCHIVED/`.
