@@ -2,7 +2,7 @@
 
 ## Current released version
 
-`1.3.0`
+`1.3.1`
 
 ### Version 1.1.0 — Post-1.0 features (2026-10-02) ✅ COMPLETE
 - **Saved searches:** `search-save`, `search-list`, `search-run`, `search-rm` — save named

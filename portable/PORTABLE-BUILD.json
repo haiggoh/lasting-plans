@@ -89,7 +89,7 @@
   ],
   "files": {
     ".claude-plugin/plugin.json": "0640e2c247e2dc6ab0f2f1b2f4780c40b388238b36576fdf7cd1923c6e84eac6",
-    "VERSION": "05c64cb6a9476411f5c1be2445cb7e163b575262cf76c1c116348335d4f9686e",
+    "VERSION": "10e2e117b01523891ca271a615ae36e9d5e52348fd7d642f66727602c1b8dcbe",
     "hooks/hooks.json": "032bb93a8920f0024af3af2611cc191572e2ed2b9ba9a9cb47bfd8cc46bd1a9f",
     "hooks/session-start.py": "6c6d91010ffa263b1139e9699e18496a6d6d2234d9eab21a1d3306f8c7db3e7d",
     "lib/lasting_plans/__init__.py": "587c72e300117cee58263b72976fd94452c0b4767e9287a0685561a13c271dea",
@@ -110,7 +110,7 @@
     "skills/lasting-plans/SKILL.md": "6331c61341c7a40c418630fcd5455b8c0aab0706927095e394169fd5b9840fd8"
   },
   "schema": "haiggoh-portable-build/1",
-  "source_commit": "78d6a0ceb159ab837838059c50cd160c35869081",
+  "source_commit": "cbbd7613592acbc222c4821c3a07f9183785963b",
   "source_repo": "haiggoh/lasting-plans",
   "transform_version": "1"
 }
