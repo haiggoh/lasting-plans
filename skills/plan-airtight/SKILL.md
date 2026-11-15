@@ -64,6 +64,19 @@ Every plan this layer hardens MUST carry, in its first 40 lines, both:
 and its closing/receipt section ends with `lasting-plans complete "<plan path>"`. The executor runs
 that command as its closing step; the signal is in-file, never a naming scheme.
 
+**End-of-life — never leave a pushed-unmerged docs branch** (waypoint plan-airtight-must-specify,
+incident 2026-11-15): when the plan is done,
+- plan lives in `~/.claude/plans` → the closing `lasting-plans complete "<plan>"` sets
+  `**Status:** completed` and moves the plan to `_ARCHIVED/` in one committed rename (the
+  archive backup follows; `auto_sort` does the same automatically after `complete_quiet_days`
+  for finished-looking plans). Done — nothing else to reap.
+- plan lives in a repo (`docs/superpowers/plans/`) → flip `**Status:**` to `completed` on a
+  short-lived `docs/plan-<x>-complete` branch and push it. That docs-only commit must be
+  fast-forward merged to the default branch by the user (executors must not merge), or the
+  plan moved to `_ARCHIVED/` instead — either way the worktree is removed and the remote
+  branch deleted afterwards. Then bump the plugin version and ship through the normal
+  release path (`rtc-ship` / `claude plugin update`).
+
 ## Writing for the executor
 
 Execution method is NATIVE by standing user decision (2026-11-05): the plan header names
