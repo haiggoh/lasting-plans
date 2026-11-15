@@ -307,28 +307,15 @@ def _commit(lib, doc_root, rel_doc, doc_id, message, res):
 
 def _commit_renamed(lib, old_rel, new_rel, doc_id, message, res, pending_rel):
     """Commit a rename staged by `gitrepo.move_path`, together with the sidecar.
-    On a case-insensitive volume the old path still resolves in the working tree,
-    so no pathspec-based commit (`--only`) can record the staged deletion — only a
-    plain index commit does. Anything staged that is not one of our paths and not a
-    plugin-owned document/sidecar is unstaged first, so the user's staged work is
-    never swept into this commit."""
+    Uses gitrepo.commit_staged_paths: on a case-insensitive volume no pathspec
+    commit can record the staged deletion, and other staged work must stay staged."""
     root = lib.root
     if not gitrepo.has_identity(root):
         res.pending.append((pending_rel, "uncommitted: no Git user.name/user.email configured"))
         return None
     try:
-        ours = {old_rel, new_rel, sidecar_rel(doc_id)}
-        allowed = ours | {d.sc["archive_relpath"] for d in lib.docs} | {sidecar_rel(d.id) for d in lib.docs}
-        staged = [p for p in gitrepo.git(root, "diff", "--cached", "--name-only", "-z").stdout.split("\0") if p]
-        for p in staged:
-            if p not in allowed:
-                gitrepo.git(root, "reset", "-q", "--", p)
-        # the rename pair is already staged by move_path's `git mv`; stage the
-        # sidecar too, then commit the index (pathspec commits cannot record a
-        # staged deletion on a case-insensitive volume)
         gitrepo.git(root, "add", "-A", "--", new_rel, sidecar_rel(doc_id))
-        gitrepo.git(root, "commit", "-q", "-m", message)
-        return gitrepo.git(root, "rev-parse", "HEAD").stdout.strip()
+        return gitrepo.commit_staged_paths(root, [old_rel, new_rel, sidecar_rel(doc_id)], message)
     except gitrepo.GitError as e:
         res.pending.append((pending_rel, "uncommitted: %s" % e))
         return None

@@ -129,6 +129,39 @@ def commit_paths(root, paths, message):
     return sha
 
 
+def commit_staged_paths(root, paths, message):
+    """Commit exactly the staged changes for `paths` (which may include a rename
+    pair staged by `git mv`), leaving every other staged change staged.
+
+    `commit --only -- <paths>` cannot record a case-only staged rename on a
+    case-insensitive volume (the old path still resolves in the working tree,
+    so its staged deletion is skipped), so this uses a plain index commit after
+    temporarily unstaging the rest — and restores those via a cached patch, so
+    the user's other staged work is never committed nor lost from the index.
+    Returns the SHA."""
+    paths = index_case(root, list(paths))
+    staged = [p for p in git(root, "diff", "--cached", "--name-only", "-z").stdout.split("\0") if p]
+    keep = set(paths)
+    non_keep = [p for p in staged if p not in keep]
+    patch = None
+    if non_keep:
+        patch = git(root, "diff", "--cached", "--binary", "--", *non_keep).stdout
+        git(root, "reset", "-q", "--", *non_keep)
+    try:
+        git(root, "commit", "-q", "-m", message)
+    except GitError:
+        if patch:
+            git(root, "apply", "--cached", "--binary", input=patch, check=False)
+        raise
+    sha = git(root, "rev-parse", "HEAD").stdout.strip()
+    if patch:
+        git(root, "apply", "--cached", "--binary", input=patch, check=False)
+    left = git(root, "status", "--porcelain", "-z", "--", *paths).stdout
+    if left.strip("\0"):
+        raise GitError("paths still dirty after commit %s: %r" % (sha[:8], left[:200]))
+    return sha
+
+
 def status_z(root):
     """[(code, path)] from porcelain -z, untracked files listed individually."""
     out = git(root, "status", "--porcelain", "-z", "--untracked-files=all").stdout

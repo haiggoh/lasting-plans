@@ -14,6 +14,16 @@ DEFAULTS = {
     "remote": None,              # single private Git URL or None (= local only)
     "layout": 1,                 # 1 = v1 two-archive layout (migration pending), 2 = migrated
     "retired_archives": [],      # v1 roots kept (moved/symlinked) by the migration, never read
+    "auto_repair": True,         # background repair on watcher/hook passes
+    "alert_after_hours": 24,     # a problem must persist this long before the banner mentions it (min 1)
+    "alert_min_attempts": 3,     # …and be attempted this often (min 1)
+    "archive_deletions": "restore-unless-trashed",  # restore | restore-unless-trashed | honor
+    "auto_sort": True,           # move completed plans to archive_subdir, playbooks to playbooks_subdir
+    "archive_subdir": "_ARCHIVED",
+    "playbooks_subdir": "_PLAYBOOKS",
+    "cleanup_rescue_subdir": "_SAVED-FROM-CLEANUP",
+    "cleanup_protection": "before",  # before | after | off — against Claude Code's 30-day cleanup
+    "complete_quiet_days": 3,    # days a finished-looking plan waits before it is archived (min 0)
     "scheduler_enabled": True,
     "interval_seconds": 900,
     "classify_overrides": {},    # source-relative path -> "plan" | "playbook"
@@ -27,6 +37,16 @@ TYPES = {
     "remote": (str, type(None)),
     "layout": int,
     "retired_archives": list,
+    "auto_repair": bool,
+    "alert_after_hours": int,
+    "alert_min_attempts": int,
+    "archive_deletions": str,
+    "auto_sort": bool,
+    "archive_subdir": str,
+    "playbooks_subdir": str,
+    "cleanup_rescue_subdir": str,
+    "cleanup_protection": str,
+    "complete_quiet_days": int,
     "scheduler_enabled": bool,
     "interval_seconds": int,
     "classify_overrides": dict,
@@ -87,6 +107,16 @@ def load():
         raise ConfigError("remotes keys must be plan/playbook")
     if cfg["interval_seconds"] < 60:
         raise ConfigError("interval_seconds must be >= 60")
+    if cfg["alert_after_hours"] < 1:
+        raise ConfigError("alert_after_hours must be >= 1")
+    if cfg["alert_min_attempts"] < 1:
+        raise ConfigError("alert_min_attempts must be >= 1")
+    if cfg["complete_quiet_days"] < 0:
+        raise ConfigError("complete_quiet_days must be >= 0")
+    if cfg["archive_deletions"] not in ("restore-unless-trashed", "restore", "honor"):
+        raise ConfigError("archive_deletions must be restore-unless-trashed, restore or honor")
+    if cfg["cleanup_protection"] not in ("before", "after", "off"):
+        raise ConfigError("cleanup_protection must be before, after or off")
     return cfg
 
 
@@ -121,17 +151,22 @@ def save(cfg):
 def parse_value(key, raw):
     if key not in TYPES:
         raise ConfigError("unknown key %r (known: %s)" % (key, ", ".join(sorted(TYPES))))
-    if key == "scheduler_enabled":
+    if key in ("scheduler_enabled", "auto_repair", "auto_sort"):
         if raw.lower() in ("true", "on", "yes", "1"):
             return True
         if raw.lower() in ("false", "off", "no", "0"):
             return False
         raise ConfigError("expected true/false")
-    if key == "interval_seconds":
+    if key in ("interval_seconds", "alert_after_hours", "alert_min_attempts", "complete_quiet_days", "layout"):
         try:
             return int(raw)
         except ValueError:
             raise ConfigError("expected an integer") from None
+    if key in ("archive_deletions", "cleanup_protection"):
+        choices = ("restore-unless-trashed", "restore", "honor") if key == "archive_deletions" else ("before", "after", "off")
+        if raw not in choices:
+            raise ConfigError("expected one of %s" % ", ".join(choices))
+        return raw
     if key == "source_dir":
         return None if raw in ("", "auto") else raw
     if key == "remote":
