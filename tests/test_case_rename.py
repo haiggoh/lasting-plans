@@ -231,3 +231,23 @@ def test_legacy_config_keys_resolve(home):
     assert cfg["remote"] == "https://github.com/x/y.git"
     assert cfg["layout"] == 1
     assert cfgmod.archive_root(cfg).endswith("Custom-plans")
+
+
+def test_commit_paths_skips_add_for_staged_deleted_paths(repo):
+    """2.0.1 hotfix (live wedge): a path that is staged-deleted and gone from disk must
+    not fatal the `git add -A` — it is skipped for adding but still committed (the
+    deletion) via the --only pathspec."""
+    d = repo / "_PLAYBOOKS"
+    d.mkdir()
+    (d / "A.md").write_text("one\n", encoding="utf-8")
+    (d / "B.md").write_text("two\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "init")
+    (d / "A.md").unlink()
+    _git(repo, "add", "-A", "--", "_PLAYBOOKS/A.md")          # staged deletion (out of index now)
+    (d / "B.md").write_text("two changed\n", encoding="utf-8")
+    sha = gitrepo.commit_paths(str(repo), ["_PLAYBOOKS/A.md", "_PLAYBOOKS/B.md"], "wedge commit")
+    assert sha
+    assert _git(repo, "status", "--porcelain").strip() == ""
+    assert _git(repo, "ls-files").splitlines() == ["_PLAYBOOKS/B.md"]
+    assert "wedge commit" in _git(repo, "log", "-1", "--format=%s")

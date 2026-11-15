@@ -115,9 +115,17 @@ def move_path(root, old, new):
 
 
 def commit_paths(root, paths, message):
-    """Stage exactly `paths` (additions, edits or removals) and commit only them. Returns the SHA."""
+    """Stage exactly `paths` (additions, edits or removals) and commit only them. Returns the SHA.
+
+    Paths that are staged-deleted and gone from disk (neither in the index nor on the
+    volume) are NOT passed to `git add` — that pathspec fatals — but stay in the commit
+    pathspec, where `commit --only` reads the worktree and records the deletion."""
     paths = index_case(root, list(paths))
-    git(root, "add", "-A", "--", *paths)
+    addable = [p for p in paths
+               if git(root, "ls-files", "--", p, check=False).stdout.strip()
+               or os.path.exists(os.path.join(root, p))]
+    if addable:
+        git(root, "add", "-A", "--", *addable)
     staged = git(root, "diff", "--cached", "--name-only", "-z", "--", *paths).stdout
     if not staged.strip("\0"):
         return None

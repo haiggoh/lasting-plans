@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1] — 2026-11-15 — hotfix
+
+- `gitrepo.commit_paths` no longer fatals on staged-deleted paths (gone from index AND
+  disk): they are skipped for `git add` but kept in the `commit --only` pathspec, so the
+  deletion still commits. This unblocked the live 2.0.0 migration wedge (a playbook doc
+  staged-deleted by 1.3.0). Regression test: test_commit_paths_skips_add_for_staged_deleted_paths.
+
 ## [2.0.0] — 2026-11-15 — BREAKING layout change + self-healing
 
 **BREAKING:** one archive instead of two. `~/Claude-plans` now mirrors the source layout

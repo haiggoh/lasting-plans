@@ -2,7 +2,7 @@
 
 ## Current released version
 
-`2.0.0`
+`2.0.1`
 
 ### Version 2.0.0 — one mirrored archive + self-healing (2026-11-15) ✅ SHIPPING
 - One archive (`~/Claude-plans`) mirroring the source layout; type is a label; v1 layouts
