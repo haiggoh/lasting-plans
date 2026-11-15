@@ -44,3 +44,5 @@ Do the plan's **Phase 0** (three strategy sentences, then the read-only prefligh
 ## 6. Progress log (append one line per receipt; newest last)
 
 - 2026-11-15 04:2x — handoff written by the planning session; no execution yet.
+- 2026-11-15 05:4x — Receipt 0 (Phase 0): preflight all ✓ (worktree clean on `feat/self-healing-doctor`, top `6f68ee4`; canonical checkout clean on `main`; no `v2.0.0` tag on origin; `HEAD..origin/main` empty; re-verified hooks/session-start.py:57-58, engine.py:200 `_free_relpath`, cli.py:606 `cmd_migrate`, cli.py:799 `MENU`). Baseline EXIT:0 — 99 passed in 8.15s with pipx pytest 9.2.0 + xdist (note: `/opt/homebrew/bin/python3` has no pytest; all suites run with `~/.local/pipx/venvs/pytest/bin/python`).
+- 2026-11-15 05:5x — Task 1 ✓: RED 2/2 (watched: None-return + AttributeError) → GREEN 2/2; full suite 101 passed; mutation check (skip `index_case` mapping in commit_paths) turned `test_commit_paths_accepts_wrong_case` red, restored, porcelain clean. Commit `777aeb3`, pushed.
