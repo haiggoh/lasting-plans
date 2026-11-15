@@ -88,6 +88,20 @@ def _run_scan(reason):
             _log("  %s %s %s" % (e[0], e[2], e[3]))
         for p in res.pending + res.errors:
             _log("  ! %s: %s" % p)
+    # background auto-repair: safe enough to run without asking; the banner speaks
+    # only for what survived (repair.alerts()), not for routine pending items
+    try:
+        if lib.cfg.get("auto_repair", True):
+            from . import repair
+            out = repair.run(lib, res)
+            for iss in out["fixed"]:
+                _log("repair: fixed %s — %s" % (iss["key"], iss.get("detail", "")))
+            for ev in out.get("sorted", []):
+                _log("repair: %s %s -> %s" % ev)
+            if out["remaining"] and not out["skipped"]:
+                _log("repair: %d issue(s) remaining (see `lasting-plans doctor`)" % len(out["remaining"]))
+    except Exception as e:
+        _log("repair pass FAILED: %s" % e)
     # cheap when in sync (a local HEAD comparison); a failed push stays pending and is
     # retried after the next scan
     try:
@@ -101,7 +115,7 @@ def run(once=False, max_seconds=None):
     cfg = cfgmod.load()
     interval = cfg["interval_seconds"]
     lib = engine.Library(cfg)
-    roots = [lib.source] + list(lib.roots.values())
+    roots = [lib.source, lib.root]
     _log("watching %s (+ archives), catch-up every %ds" % (lib.source, interval))
     _run_scan("start")
     if once:

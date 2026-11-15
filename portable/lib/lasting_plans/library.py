@@ -137,7 +137,7 @@ def search_history(lib, query, regex=False, limit=50):
     [{id, path, commits: [{sha, date, subject}], in_current}]"""
     flag = ["-G", query] if regex else ["-S", query]
     hits = []
-    for root in sorted(set(lib.roots.values())):
+    for root in [lib.root]:
         if not os.path.isdir(os.path.join(root, ".git")) or not gitrepo.head(root):
             continue
         out = gitrepo.git(root, "log", "-i", *flag, "--format=\x1e%H\x1f%aI\x1f%s", "--name-only", "--", ".",

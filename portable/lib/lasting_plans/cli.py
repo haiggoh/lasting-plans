@@ -7,6 +7,7 @@ import json
 import os
 import shlex
 import sys
+import time
 
 from . import PREFIX, __version__
 from . import config as cfgmod
@@ -55,8 +56,8 @@ def cmd_status(args):
     lines = [
         "%s %s" % (PREFIX, __version__),
         "  source (swept by Claude Code): %s — %d document(s)" % (st["source"], st["source_files"]),
-        "  plans archive:     %s — %d" % (st["roots"]["plan"], st["counts"].get("plan", 0)),
-        "  playbooks archive: %s — %d" % (st["roots"]["playbook"], st["counts"].get("playbook", 0)),
+        "  archive: %s — %d document(s) (%d plan, %d playbook)" % (
+            st["archive"], sum(st["counts"].values()), st["counts"].get("plan", 0), st["counts"].get("playbook", 0)),
         "  kept after the source copy was swept: %d" % st["kept_after_source_gone"],
         "  watcher: %s" % watch,
         "  last scan: %s" % (lr.get("finished_utc") or "never"),
@@ -98,6 +99,10 @@ def cmd_status(args):
         lines.append("  ⚠ remote push pending — `lasting-plans remote status --verify`")
     if not bad:
         lines.append("  ✓ every source document has a lasting copy")
+    from . import repair as _repair
+    n_fixed = len(_repair.recent_fixes(7))
+    if n_fixed > 0:
+        lines.append("  ✓ auto-repaired %d issue(s) in the last 7 days" % n_fixed)
     out(args, "\n".join(lines), st)
     return 5 if bad else 0
 
@@ -130,7 +135,7 @@ def cmd_sync(args):
     pushes = [] if getattr(args, "no_push", False) else remote.auto_push(lib)
     for kind, ok, detail in pushes:
         lines.append("  %s remote %s: %s" % ("☁" if ok else "⏳", kind, detail))
-    data["remote"] = [{"archive": k, "ok": ok, "detail": d} for k, ok, d in pushes]
+    data["remote"] = [{"kind": k, "ok": ok, "detail": d} for k, ok, d in pushes]
     out(args, "\n".join(lines), data)
     return 5 if (res.pending or res.errors or any(not ok for _, ok, _ in pushes)) else 0
 
@@ -318,16 +323,16 @@ def cmd_reclassify(args):
         print("usage: lasting-plans reclassify REF {plan,playbook}", file=sys.stderr)
         return 2
     try:
-        rel, a, b = engine.reclassify(lib, d, args.type)
+        sha = engine.reclassify(lib, d, args.type)
     except ValueError as e:
         print("%s: %s" % (PREFIX, e), file=sys.stderr)
         return 2
     except engine.Busy:
         print("%s: a scan is running; try again in a moment" % PREFIX, file=sys.stderr)
         return 5
-    out(args, "%s: %s is now a %s\n  %s\n  commits: %s (added), %s (removed from the %s archive)" % (
-        PREFIX, d.id, args.type, os.path.join(lib.roots[args.type], rel), (a or "")[:10], (b or "")[:10], d.type),
-        {"id": d.id, "type": args.type, "path": rel, "commit_added": a, "commit_removed": b})
+    out(args, "%s: %s is now a %s (label only — the file stays at %s)\n  commit: %s" % (
+        PREFIX, d.id, args.type, d.sc["archive_relpath"], (sha or "none")[:10]),
+        {"id": d.id, "type": args.type, "path": d.sc["archive_relpath"], "commit": sha})
     return 0
 
 
@@ -372,57 +377,56 @@ def cmd_recover_dates(args):
 
 def cmd_remote(args):
     lib = engine.Library()
-    kinds = [args.archive] if args.archive in ("plan", "playbook") else list(lib.roots)
+    if args.archive in ("plan", "playbook"):
+        print("%s: note: the plan/playbook kind argument is legacy and ignored — there is one archive now"
+              % PREFIX, file=sys.stderr)
+    url_arg = args.url or (args.archive if args.archive not in (None, "all", "plan", "playbook") else None)
     if args.action == "status":
         rs = remote.summary(lib, verify=args.verify)
+        v = rs[remote.KIND]
         lines = ["%s remote%s" % (PREFIX, "" if args.verify else " (last verified push; --verify asks the remote)")]
-        for k in kinds:
-            v = rs[k]
-            lines.append("  %-9s %s" % (k, v["state"]))
-            for f in ("url", "mode", "privacy", "local_head", "last_pushed_sha", "pushed_utc", "remote_tip",
-                      "unpushed_commits", "last_error", "verify_error"):
-                if v.get(f):
-                    lines.append("      %-16s %s" % (f, v[f]))
+        lines.append("  %s" % v["state"])
+        for f in ("url", "mode", "privacy", "local_head", "last_pushed_sha", "pushed_utc", "remote_tip",
+                  "unpushed_commits", "last_error", "verify_error"):
+            if v.get(f):
+                lines.append("      %-16s %s" % (f, v[f]))
         out(args, "\n".join(lines), rs)
-        return 5 if any(rs[k]["state"].startswith(("pending", "unknown")) for k in kinds) else 0
+        return 5 if v["state"].startswith(("pending", "unknown")) else 0
     if args.action == "set":
-        if args.archive not in ("plan", "playbook") or not args.url:
-            print("usage: lasting-plans remote set plan|playbook URL [--confirm-private]", file=sys.stderr)
+        if not url_arg:
+            print("usage: lasting-plans remote set URL [--confirm-private]   (legacy: remote set plan URL)", file=sys.stderr)
             return 2
-        verdict, detail = remote.configure(lib, args.archive, args.url, args.confirm_private)
-        print("%s: %s archive -> %s (%s: %s). Nothing pushed yet; `lasting-plans remote push`." % (
-            PREFIX, args.archive, remote._redact(args.url), verdict, detail))
+        verdict, detail = remote.configure(lib, args.archive, url_arg, args.confirm_private)
+        print("%s: archive -> %s (%s: %s). Nothing pushed yet; `lasting-plans remote push`." % (
+            PREFIX, remote._redact(url_arg), verdict, detail))
         return 0
     if args.action == "create-github":
-        if args.archive not in ("plan", "playbook") or not args.url:
-            print("usage: lasting-plans remote create-github plan|playbook OWNER/NAME", file=sys.stderr)
+        if not url_arg or "/" not in url_arg:
+            print("usage: lasting-plans remote create-github OWNER/NAME", file=sys.stderr)
             return 2
-        owner, _, name = args.url.partition("/")
+        owner, _, name = url_arg.partition("/")
         u, how = remote.create_github(owner, name)
         remote.configure(lib, args.archive, u)
-        print("%s: %s %s, set as the %s archive's remote. Nothing pushed yet." % (PREFIX, args.url, how, args.archive))
+        print("%s: %s %s, set as the archive's remote. Nothing pushed yet." % (PREFIX, url_arg, how))
         return 0
     if args.action == "off":
-        for k in kinds:
-            remote.disable(lib, k)
-        print("%s: remote off for %s; local archives untouched, nothing deleted remotely" % (PREFIX, ", ".join(kinds)))
+        remote.disable(lib, args.archive)
+        print("%s: remote off; the local archive is untouched, nothing deleted remotely" % PREFIX)
         return 0
     if args.action == "push":
-        rc = 0
-        for k in kinds:
-            if not remote.url(lib.cfg, k):
-                continue
-            ok, detail = remote.push(lib, k)
-            print("%s: %s %s — %s" % (PREFIX, "☁" if ok else "⏳ PENDING", k, detail))
-            rc = rc or (0 if ok else 5)
-        return rc
+        if not remote.url(lib.cfg):
+            print("%s: no remote configured" % PREFIX, file=sys.stderr)
+            return 1
+        ok, detail = remote.push(lib)
+        print("%s: %s — %s" % (PREFIX, "☁ verified" if ok else "⏳ PENDING", detail))
+        return 0 if ok else 5
     if args.action == "clone":
-        if args.archive not in ("plan", "playbook") or not args.url:
-            print("usage: lasting-plans remote clone plan|playbook URL", file=sys.stderr)
+        if not url_arg:
+            print("usage: lasting-plans remote clone URL [--confirm-private]", file=sys.stderr)
             return 2
-        n, unapplied = remote.clone(lib, args.archive, args.url, args.confirm_private)
+        n, unapplied = remote.clone(lib, args.archive, url_arg, args.confirm_private)
         print("%s: cloned %d document(s) into %s; dates/tags re-applied%s" % (
-            PREFIX, n, lib.roots[args.archive], (" except %d file(s) — see `meta --apply`" % len(unapplied)) if unapplied else ""))
+            PREFIX, n, lib.root, (" except %d file(s) — see `meta --apply`" % len(unapplied)) if unapplied else ""))
         return 0
     return 2
 
@@ -455,15 +459,127 @@ def cmd_doctor(args):
     for p in lr.get("pending_items", []) + lr.get("error_items", []):
         checks.append({"check": "last scan: %s" % p["path"], "ok": False, "detail": p["reason"]})
     human = "\n".join(["%s doctor" % PREFIX] + ["  %s %s%s" % ("ℹ" if c.get("note") else "✓" if c["ok"] else "✗", c["check"], ("  — " + c["detail"]) if c["detail"] and not c["ok"] else "") for c in checks])
-    out(args, human, {"checks": checks})
+    # auto-repair section: last pass, remaining with first-seen/attempts, fixes in the last 7 days
+    from . import repair
+    led = repair._load_ledger()
+    fixes = repair.recent_fixes(7)
+    human += "\n%s auto-repair" % PREFIX
+    human += "\n  last run: %s" % (lr.get("finished_utc") or "never")
+    if led:
+        for key, e in sorted(led.items()):
+            human += "\n  remaining: %s (%s, first seen %s, %d attempt(s))" % (
+                key, e.get("severity"), (e.get("first_seen_utc") or "?")[:10], e.get("attempts", 0))
+    else:
+        human += "\n  remaining: none"
+    human += "\n  fixed in the last 7 days: %d" % len(fixes)
+    for e in fixes[-10:]:
+        human += "\n    %s  %s  %s" % ((e.get("utc") or "")[:10], e.get("event"), e.get("key"))
+    out(args, human, {"checks": checks, "auto_repair": {"remaining": led, "recent_fixes": fixes}})
     return 0 if all(c["ok"] for c in checks) else 5
+
+
+def cmd_repair(args):
+    """Run one background repair pass now (what the watcher/hook do automatically)."""
+    from . import repair
+    lib = engine.Library()
+    res = engine.scan(lib) if not args.dry_run else None
+    result = repair.run(lib, res, dry_run=args.dry_run)
+    lines = ["%s repair%s: %d fixed, %d remaining%s" % (
+        PREFIX, " (dry run)" if args.dry_run else "", len(result["fixed"]), len(result["remaining"]),
+        ", skipped (another scan holds the lock)" if result["skipped"] else "")]
+    for iss in result["fixed"]:
+        lines.append("  ✓ %s — %s" % (iss["key"], iss.get("detail", "")))
+    for iss in result["remaining"]:
+        lines.append("  ⏳ %s — %s" % (iss["key"], iss.get("detail", "")))
+    for ev in result.get("sorted", []):
+        lines.append("  → %s %s -> %s" % ev)
+    data = {"fixed": result["fixed"], "remaining": result["remaining"], "skipped": result["skipped"],
+            "sorted": result.get("sorted", [])}
+    out(args, "\n".join(lines), data)
+    if result["skipped"]:
+        return 5
+    return 0 if not result["remaining"] else 5
+
+
+def cmd_behaviour(args):
+    """Behaviour settings (the opt-outs). TTY: numbered interactive rows; off TTY: print the table."""
+    cfg = cfgmod.load()
+    rows = list(cfgmod.BEHAVIOUR_SETTINGS)
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        lines = ["%s behaviour settings:" % PREFIX]
+        for key, label, choices, expl in rows:
+            lines.append("  %-46s %-24s %s" % (label, json.dumps(cfg.get(key)), (choices and " / ".join(c[0] if isinstance(c, tuple) else c for c in choices)) or ""))
+            if expl:
+                lines.append("      %s" % expl)
+        out(args, "\n".join(lines), {"behaviour": {k: cfg.get(k) for k, _l, _c, _e in rows}})
+        return 0
+    from . import rescue
+    while True:
+        print()
+        for i, (key, label, _choices, expl) in enumerate(rows, 1):
+            extra = ""
+            if key == "cleanup_protection":
+                n = rescue.cleanup_period_days()
+                extra = "  (Claude Code deletes top-level plans after %d days; protected at min(%d, 30) − %d)" % (
+                    n, n, rescue.MARGIN_DAYS)
+            print("  %2d) %-46s %s%s" % (i, label, json.dumps(cfg.get(key)), extra))
+            if expl:
+                print("      %s" % expl)
+        print("   b) back   q) quit")
+        try:
+            c = input("%s > " % PREFIX).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if c.lower() in ("q", "quit", ""):
+            return 0
+        if c.lower() == "b":
+            return 0
+        if not c.isdigit() or not 1 <= int(c) <= len(rows):
+            print("pick 1-%d, b or q" % len(rows))
+            continue
+        key, label, choices, expl = rows[int(c) - 1]
+        try:
+            if choices == ["on", "off"]:
+                new = not bool(cfg.get(key, True))
+                v = cfgmod.parse_value(key, "on" if new else "off")
+            elif choices == ["int"]:
+                raw = input("  %s (integer): " % label).strip()
+                v = cfgmod.parse_value(key, raw)
+            else:
+                for j, ch in enumerate(choices, 1):
+                    val, desc = ch if isinstance(ch, tuple) else (ch, "")
+                    print("    %d) %s  %s" % (j, val, desc))
+                pick = input("  pick: ").strip()
+                if not pick.isdigit() or not 1 <= int(pick) <= len(choices):
+                    print("  invalid pick — nothing written")
+                    continue
+                val = choices[int(pick) - 1]
+                v = cfgmod.parse_value(key, val[0] if isinstance(val, tuple) else val)
+        except cfgmod.ConfigError as e:
+            print("  invalid: %s — nothing written" % e)
+            continue
+        trial = dict(cfg)
+        trial[key] = v
+        try:
+            cfgmod.validate(trial)
+        except cfgmod.ConfigError as e:
+            print("  invalid: %s — nothing written" % e)
+            continue
+        cfg = trial
+        cfgmod.save(cfg)
+        cfg = cfgmod.load()  # validate what we wrote
+        print("  %s = %s" % (key, json.dumps(cfg[key])))
 
 
 def cmd_settings(args):
     cfg = cfgmod.load()
     if args.action == "show":
-        out(args, "%s settings (%s)\n" % (PREFIX, cfgmod.config_path()) +
-            "\n".join("  %-20s %s" % (k, json.dumps(v)) for k, v in sorted(cfg.items())), cfg)
+        lines = ["%s settings (%s)" % (PREFIX, cfgmod.config_path())]
+        for k, v in sorted(cfg.items()):
+            label = cfgmod.BEHAVIOUR_LABELS.get(k)
+            lines.append("  %-20s %s%s" % (k, json.dumps(v), ("   # " + label) if label else ""))
+        out(args, "\n".join(lines), cfg)
         return 0
     if args.action == "set":
         if not args.key or args.value is None:
@@ -478,7 +594,7 @@ def cmd_settings(args):
     cfgmod.save(cfg)
     cfgmod.load()  # validate what we wrote
     print("%s: %s = %s" % (PREFIX, args.key, json.dumps(cfg[args.key])))
-    if args.key in ("scheduler_enabled", "interval_seconds", "source_dir", "plans_root", "playbooks_root") and scheduler.state().get("installed"):
+    if args.key in ("scheduler_enabled", "interval_seconds", "source_dir", "archive_root") and scheduler.state().get("installed"):
         ok, msg = (scheduler.install(LIB_DIR) if cfg["scheduler_enabled"] else scheduler.uninstall())
         print("  watcher: %s" % msg)
     return 0
@@ -510,8 +626,8 @@ def cmd_setup(args):
     """Idempotent first run: create the archives, import, install the watcher (opt-out)."""
     print("%s setup — local only, no network, no account." % PREFIX)
     lib = engine.Library()
-    for t, how in engine.prepare_roots(lib).items():
-        print("  %s archive %s: %s" % (t, lib.roots[t], how))
+    for _t, how in engine.prepare_roots(lib).items():
+        print("  archive %s: %s" % (lib.root, how))
     rc = cmd_sync(argparse.Namespace(json=False, verbose=False, no_push=False))
     cfg = cfgmod.load()
     if args.no_scheduler or not cfg["scheduler_enabled"]:
@@ -521,6 +637,27 @@ def cmd_setup(args):
         print("  watcher: %s" % msg)
         print("  opt out any time: lasting-plans scheduler uninstall")
     return rc
+
+
+def cmd_complete(args):
+    """Mark a plan completed: sets **Status:** and moves it to _ARCHIVED/ now."""
+    from . import sorting
+    lib = engine.Library()
+    if args.dry_run:
+        d = _one(lib, args.ref)
+        text = open(d.path, encoding="utf-8", errors="replace").read() if os.path.exists(d.path) else ""
+        ok, reason = sorting.is_complete(lib, d, text, time.time())
+        out(args, "%s: %s — would move to %s now (%s)" % (PREFIX, args.ref, lib.cfg.get("archive_subdir"), reason or "explicit"),
+            {"ref": args.ref, "would_move": True})
+        return 0
+    try:
+        new_rel = sorting.complete(lib, args.ref)
+    except LookupError as e:
+        print("%s: %s" % (PREFIX, e), file=sys.stderr)
+        return 3
+    out(args, "%s: %s completed — moved to %s" % (PREFIX, args.ref, new_rel),
+        {"ref": args.ref, "new_relpath": new_rel})
+    return 0
 
 
 def cmd_import(args):
@@ -809,6 +946,10 @@ MENU = [
     ("history", "History of a document", ["ref"]),
     ("diff", "Diff latest change of a document", ["ref"]),
     ("doctor", "Doctor (health checks)", []),
+    ("repair", "Repair now (what the background does)", []),
+    ("repair --dry-run", "Preview repairs and sort moves", []),
+    ("complete", "Mark a plan completed (moves it to _ARCHIVED)", ["ref"]),
+    ("behaviour", "Behaviour settings (opt-outs)", []),
     ("remote status", "Remote backup status", []),
     ("settings show", "Show settings", []),
     ("scheduler status", "Watcher status", []),
@@ -858,8 +999,8 @@ def menu(parser):
 def build_parser():
     p = argparse.ArgumentParser(
         prog="lasting-plans",
-        description="📜 Lasting Plans — keep Claude Code plans and playbooks in visible, Git-versioned archives "
-                    "(~/Claude-plans, ~/Claude-playbooks) that the 30-day plans sweep cannot touch. "
+        description="📜 Lasting Plans — keep Claude Code plans and playbooks in one visible, Git-versioned archive "
+                    "(~/Claude-plans, mirroring the plans folder layout) that the 30-day plans sweep cannot touch. "
                     "Bare `lasting-plans` on a terminal opens a menu; otherwise prints status.",
         epilog=ENV_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--version", action="version", version="lasting-plans " + __version__)
@@ -906,7 +1047,7 @@ def build_parser():
     s.add_argument("--modified")
     s.add_argument("--tag", action="append", help="Finder tag to ADD (repeatable; never removes)")
     s.add_argument("--apply", action="store_true", help="re-apply recorded metadata (e.g. after a clone)")
-    s = add("reclassify", cmd_reclassify, "move a document between the plan and playbook archives "
+    s = add("reclassify", cmd_reclassify, "change a document's plan/playbook label — the file stays put "
             "(no REF: list documents the classifier would now file differently)")
     s.add_argument("ref", nargs="?")
     s.add_argument("type", nargs="?", choices=["plan", "playbook"])
@@ -923,12 +1064,15 @@ def build_parser():
     s.add_argument("ref", nargs="?")
     s.add_argument("--add", action="append")
     s.add_argument("--remove", action="append")
-    s = add("remote", cmd_remote, "optional PRIVATE off-machine copy: status [--verify] | set | create-github | push | off | clone")
+    s = add("remote", cmd_remote, "optional PRIVATE off-machine copy of the archive: status [--verify] | set | create-github | push | off | clone")
     s.add_argument("action", choices=["status", "set", "create-github", "push", "off", "clone"])
-    s.add_argument("archive", nargs="?", choices=["plan", "playbook", "all"])
+    s.add_argument("archive", nargs="?", help="URL (set/clone) or OWNER/NAME (create-github); legacy plan|playbook kind accepted and ignored")
     s.add_argument("url", nargs="?", help="Git URL (set/clone) or OWNER/NAME (create-github)")
     s.add_argument("--verify", action="store_true", help="status: read the remote's tip now (network)")
     s.add_argument("--confirm-private", action="store_true", help="accept a non-GitHub URL whose privacy cannot be checked")
+    s = add("complete", cmd_complete, "mark a plan completed (sets **Status:** and moves it to _ARCHIVED/ now)")
+    s.add_argument("ref", help="document id, prefix, or path")
+    s.add_argument("--dry-run", action="store_true", help="show what would happen")
     s = add("import", cmd_import, "opt-in copy from archive to source folder (reverse import)")
     s.add_argument("ref", help="document id, prefix, or path fragment")
     s.add_argument("--force-playbook", action="store_true", help="allow importing playbooks (default: plans only)")
@@ -958,7 +1102,10 @@ def build_parser():
     s = add("backup", cmd_backup, "backup archive(s) to a local destination folder (external drive, etc.)")
     s.add_argument("destination", help="path to backup destination folder")
     s.add_argument("--kind", choices=["plan", "playbook"], help="backup only this archive (default: both)")
-    add("doctor", cmd_doctor, "health checks, including last scan's pending items")
+    add("doctor", cmd_doctor, "health checks, including last scan's pending items and the auto-repair section")
+    s = add("repair", cmd_repair, "run one background repair pass now (what the watcher/hook do automatically)")
+    s.add_argument("--dry-run", action="store_true", help="list what would be fixed, write nothing")
+    s = add("behaviour", cmd_behaviour, "behaviour settings (the opt-outs): interactive on a TTY, prints the table otherwise")
     s = add("settings", cmd_settings, "show / set / reset settings")
     s.add_argument("action", choices=["show", "set", "reset"])
     s.add_argument("key", nargs="?")
