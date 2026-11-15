@@ -2,6 +2,16 @@
 
 ## Current released version
 
+`2.0.0`
+
+### Version 2.0.0 — one mirrored archive + self-healing (2026-11-15) ✅ SHIPPING
+- One archive (`~/Claude-plans`) mirroring the source layout; type is a label; v1 layouts
+  migrate automatically (history merged, old root symlinked, retired under the state dir).
+- Background auto-repair on every watcher/hook pass; the banner speaks only when repair
+  could not fix something or for emergencies; opt-outs in the `behaviour` menu.
+- Case-safe Git renames everywhere; completion + sorting into `_ARCHIVED/`/`_PLAYBOOKS/`
+  (moves only, committed as renames); cleanup protection into `_SAVED-FROM-CLEANUP/`
+  before and after Claude Code's 30-day sweep.
 `1.3.1`
 
 ### Version 1.1.0 — Post-1.0 features (2026-10-02) ✅ COMPLETE
