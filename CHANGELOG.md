@@ -1,5 +1,41 @@
 # Changelog
 
+## [2.0.0] — 2026-11-15 — BREAKING layout change + self-healing
+
+**BREAKING:** one archive instead of two. `~/Claude-plans` now mirrors the source layout
+exactly; `type` (plan/playbook) is a sidecar label, not a location. On upgrade, the watcher
+or session hook migrates automatically (`lasting-plans repair` runs it now): both archives'
+history is merged into `~/Claude-plans`, every document moves to its source path, and
+`~/Claude-playbooks` becomes a symlink to `~/Claude-plans/_PLAYBOOKS` (the old folder is
+moved, never deleted, under `~/.local/state/lasting-plans/retired-archives/`). Config keys
+`plans_root`/`playbooks_root`/`remotes.plan` resolve read-compatibly to `archive_root`/
+`retired_archives`/`remote`; the migration writes the new keys (`layout: 2`). The GitHub
+repos are untouched. `remote` commands drop the `plan|playbook` kind (still accepted,
+ignored).
+
+- **Background auto-repair** on every watcher/hook pass: fixers for every foreseeable
+  failure class (migration, uncommitted, no-identity, archive-missing with
+  restore/restore-unless-trashed/honor policies and Trash checks, corrupt sidecars,
+  type mismatches, empty folders, watcher down). The SessionStart banner speaks only when
+  auto-repair could not fix something (after `alert_min_attempts`/`alert_after_hours`) or
+  for emergencies — routine pending items no longer put tasks on your plate. Opt out in the
+  menu (`behaviour`) or `settings set auto_repair off`.
+- **Case-safe Git**: case-only renames are single `R` commits everywhere (`gitrepo.index_case`,
+  `move_path`, `commit_staged_paths`); the 1.x `_PLAYBOOKS`/`_playbooks` wedge bug is fixed.
+- **Completion + sorting**: canonical in-file `**Status:**` signal (+ plan-airtight plans
+  carry it and end with `lasting-plans complete "<plan>"`); `lasting-plans complete` moves a
+  plan to `_ARCHIVED/` now; automatic sort moves completed plans to `_ARCHIVED/`, playbooks
+  to `_PLAYBOOKS/`, HISTORICAL playbooks to `_ARCHIVED/` — moves only, committed as renames,
+  sticky user overrides honored.
+- **Cleanup protection**: top-level plans at risk of Claude Code's 30-day sweep are moved to
+  `_SAVED-FROM-CLEANUP/` before it deletes them (dates/colour labels kept — verified), and
+  anything it already took is put back from the archive (committed as a move, metadata
+  re-applied). The backup never mirrors the rescue folder. `cleanup_protection`
+  (before/after/off), `complete_quiet_days`, `alert_after_hours`, `alert_min_attempts`,
+  `archive_deletions`, `auto_sort`, `auto_repair` settings; `behaviour` menu.
+- New `repair [--dry-run] [--json]` command (exit 5 when something remains); `doctor` shows an
+  auto-repair section; `status` counts recent auto-fixes. `migrate` (source-repo import) is
+  unchanged.
 ## [1.3.1] — 2026-11-15
 
 ### Added — Phase 5 Wave C: committed portable package (COORDINATION C1/C2)

@@ -38,6 +38,14 @@ def main():
         if not os.path.isdir(lib.source):
             return 0
         first = not os.path.isdir(os.path.join(lib.root, ".git"))
+        auto = cfg.get("auto_repair", True)
+        if auto:
+            # a v1 layout must be migrated BEFORE any one-root scan runs, or the
+            # playbook sources would be re-imported as duplicates
+            from lasting_plans import migrate, repair
+            if migrate.needed(cfg):
+                repair.run(lib)
+                lib = engine.Library(cfgmod.load())
         res = engine.scan(lib)
         if first:
             notes.append("set up: plans are now kept in %s (local Git, never deleted by Claude Code's cleanup)"
@@ -53,13 +61,28 @@ def main():
                 if ok:
                     notes.append(("watcher %s — opt out: lasting-plans scheduler uninstall" % ("installed" if not staged else "updated to " + __version__)))
                 else:
-                    notes.append("⚠ watcher NOT installed: %s" % msg)
-        if res.pending or res.errors:
+                    from lasting_plans import repair
+                    repair.note_issue("watcher_down", "watcher", "install failed: %s" % msg)
+        if auto:
+            from lasting_plans import repair
+            out = repair.run(lib, res)
+            del out  # fixes are journaled; `doctor` shows them
+            alerts = repair.alerts()
+            if alerts:
+                oldest = min(a.get("first_seen_utc") or "" for a in alerts)[:10]
+                notes.append("⚠ %d problem(s) auto-repair could not fix (since %s) — details: `lasting-plans doctor`"
+                             % (len(alerts), oldest))
+        elif res.pending or res.errors:
             notes.append("⚠ %d item(s) pending — run `lasting-plans doctor`" % (len(res.pending) + len(res.errors)))
     except engine.Busy:
         return 0
     except Exception as e:
-        notes.append("⚠ %s" % e)
+        try:
+            from lasting_plans import repair
+            repair.note_issue("hook_exception", "hook", str(e))
+        except Exception:
+            pass
+        return 0
     if notes:
         msg = "%s: %s" % (PREFIX, "; ".join(notes))
         print(json.dumps({"systemMessage": msg,

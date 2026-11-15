@@ -99,6 +99,10 @@ def cmd_status(args):
         lines.append("  ⚠ remote push pending — `lasting-plans remote status --verify`")
     if not bad:
         lines.append("  ✓ every source document has a lasting copy")
+    from . import repair as _repair
+    n_fixed = len(_repair.recent_fixes(7))
+    if n_fixed > 0:
+        lines.append("  ✓ auto-repaired %d issue(s) in the last 7 days" % n_fixed)
     out(args, "\n".join(lines), st)
     return 5 if bad else 0
 
@@ -455,15 +459,127 @@ def cmd_doctor(args):
     for p in lr.get("pending_items", []) + lr.get("error_items", []):
         checks.append({"check": "last scan: %s" % p["path"], "ok": False, "detail": p["reason"]})
     human = "\n".join(["%s doctor" % PREFIX] + ["  %s %s%s" % ("ℹ" if c.get("note") else "✓" if c["ok"] else "✗", c["check"], ("  — " + c["detail"]) if c["detail"] and not c["ok"] else "") for c in checks])
-    out(args, human, {"checks": checks})
+    # auto-repair section: last pass, remaining with first-seen/attempts, fixes in the last 7 days
+    from . import repair
+    led = repair._load_ledger()
+    fixes = repair.recent_fixes(7)
+    human += "\n%s auto-repair" % PREFIX
+    human += "\n  last run: %s" % (lr.get("finished_utc") or "never")
+    if led:
+        for key, e in sorted(led.items()):
+            human += "\n  remaining: %s (%s, first seen %s, %d attempt(s))" % (
+                key, e.get("severity"), (e.get("first_seen_utc") or "?")[:10], e.get("attempts", 0))
+    else:
+        human += "\n  remaining: none"
+    human += "\n  fixed in the last 7 days: %d" % len(fixes)
+    for e in fixes[-10:]:
+        human += "\n    %s  %s  %s" % ((e.get("utc") or "")[:10], e.get("event"), e.get("key"))
+    out(args, human, {"checks": checks, "auto_repair": {"remaining": led, "recent_fixes": fixes}})
     return 0 if all(c["ok"] for c in checks) else 5
+
+
+def cmd_repair(args):
+    """Run one background repair pass now (what the watcher/hook do automatically)."""
+    from . import repair
+    lib = engine.Library()
+    res = engine.scan(lib) if not args.dry_run else None
+    result = repair.run(lib, res, dry_run=args.dry_run)
+    lines = ["%s repair%s: %d fixed, %d remaining%s" % (
+        PREFIX, " (dry run)" if args.dry_run else "", len(result["fixed"]), len(result["remaining"]),
+        ", skipped (another scan holds the lock)" if result["skipped"] else "")]
+    for iss in result["fixed"]:
+        lines.append("  ✓ %s — %s" % (iss["key"], iss.get("detail", "")))
+    for iss in result["remaining"]:
+        lines.append("  ⏳ %s — %s" % (iss["key"], iss.get("detail", "")))
+    for ev in result.get("sorted", []):
+        lines.append("  → %s %s -> %s" % ev)
+    data = {"fixed": result["fixed"], "remaining": result["remaining"], "skipped": result["skipped"],
+            "sorted": result.get("sorted", [])}
+    out(args, "\n".join(lines), data)
+    if result["skipped"]:
+        return 5
+    return 0 if not result["remaining"] else 5
+
+
+def cmd_behaviour(args):
+    """Behaviour settings (the opt-outs). TTY: numbered interactive rows; off TTY: print the table."""
+    cfg = cfgmod.load()
+    rows = list(cfgmod.BEHAVIOUR_SETTINGS)
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        lines = ["%s behaviour settings:" % PREFIX]
+        for key, label, choices, expl in rows:
+            lines.append("  %-46s %-24s %s" % (label, json.dumps(cfg.get(key)), (choices and " / ".join(c[0] if isinstance(c, tuple) else c for c in choices)) or ""))
+            if expl:
+                lines.append("      %s" % expl)
+        out(args, "\n".join(lines), {"behaviour": {k: cfg.get(k) for k, _l, _c, _e in rows}})
+        return 0
+    from . import rescue
+    while True:
+        print()
+        for i, (key, label, _choices, expl) in enumerate(rows, 1):
+            extra = ""
+            if key == "cleanup_protection":
+                n = rescue.cleanup_period_days()
+                extra = "  (Claude Code deletes top-level plans after %d days; protected at min(%d, 30) − %d)" % (
+                    n, n, rescue.MARGIN_DAYS)
+            print("  %2d) %-46s %s%s" % (i, label, json.dumps(cfg.get(key)), extra))
+            if expl:
+                print("      %s" % expl)
+        print("   b) back   q) quit")
+        try:
+            c = input("%s > " % PREFIX).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if c.lower() in ("q", "quit", ""):
+            return 0
+        if c.lower() == "b":
+            return 0
+        if not c.isdigit() or not 1 <= int(c) <= len(rows):
+            print("pick 1-%d, b or q" % len(rows))
+            continue
+        key, label, choices, expl = rows[int(c) - 1]
+        try:
+            if choices == ["on", "off"]:
+                new = not bool(cfg.get(key, True))
+                v = cfgmod.parse_value(key, "on" if new else "off")
+            elif choices == ["int"]:
+                raw = input("  %s (integer): " % label).strip()
+                v = cfgmod.parse_value(key, raw)
+            else:
+                for j, ch in enumerate(choices, 1):
+                    val, desc = ch if isinstance(ch, tuple) else (ch, "")
+                    print("    %d) %s  %s" % (j, val, desc))
+                pick = input("  pick: ").strip()
+                if not pick.isdigit() or not 1 <= int(pick) <= len(choices):
+                    print("  invalid pick — nothing written")
+                    continue
+                val = choices[int(pick) - 1]
+                v = cfgmod.parse_value(key, val[0] if isinstance(val, tuple) else val)
+        except cfgmod.ConfigError as e:
+            print("  invalid: %s — nothing written" % e)
+            continue
+        trial = dict(cfg)
+        trial[key] = v
+        try:
+            cfgmod.validate(trial)
+        except cfgmod.ConfigError as e:
+            print("  invalid: %s — nothing written" % e)
+            continue
+        cfg = trial
+        cfgmod.save(cfg)
+        cfg = cfgmod.load()  # validate what we wrote
+        print("  %s = %s" % (key, json.dumps(cfg[key])))
 
 
 def cmd_settings(args):
     cfg = cfgmod.load()
     if args.action == "show":
-        out(args, "%s settings (%s)\n" % (PREFIX, cfgmod.config_path()) +
-            "\n".join("  %-20s %s" % (k, json.dumps(v)) for k, v in sorted(cfg.items())), cfg)
+        lines = ["%s settings (%s)" % (PREFIX, cfgmod.config_path())]
+        for k, v in sorted(cfg.items()):
+            label = cfgmod.BEHAVIOUR_LABELS.get(k)
+            lines.append("  %-20s %s%s" % (k, json.dumps(v), ("   # " + label) if label else ""))
+        out(args, "\n".join(lines), cfg)
         return 0
     if args.action == "set":
         if not args.key or args.value is None:
@@ -830,6 +946,10 @@ MENU = [
     ("history", "History of a document", ["ref"]),
     ("diff", "Diff latest change of a document", ["ref"]),
     ("doctor", "Doctor (health checks)", []),
+    ("repair", "Repair now (what the background does)", []),
+    ("repair --dry-run", "Preview repairs and sort moves", []),
+    ("complete", "Mark a plan completed (moves it to _ARCHIVED)", ["ref"]),
+    ("behaviour", "Behaviour settings (opt-outs)", []),
     ("remote status", "Remote backup status", []),
     ("settings show", "Show settings", []),
     ("scheduler status", "Watcher status", []),
@@ -982,7 +1102,10 @@ def build_parser():
     s = add("backup", cmd_backup, "backup archive(s) to a local destination folder (external drive, etc.)")
     s.add_argument("destination", help="path to backup destination folder")
     s.add_argument("--kind", choices=["plan", "playbook"], help="backup only this archive (default: both)")
-    add("doctor", cmd_doctor, "health checks, including last scan's pending items")
+    add("doctor", cmd_doctor, "health checks, including last scan's pending items and the auto-repair section")
+    s = add("repair", cmd_repair, "run one background repair pass now (what the watcher/hook do automatically)")
+    s.add_argument("--dry-run", action="store_true", help="list what would be fixed, write nothing")
+    s = add("behaviour", cmd_behaviour, "behaviour settings (the opt-outs): interactive on a TTY, prints the table otherwise")
     s = add("settings", cmd_settings, "show / set / reset settings")
     s.add_argument("action", choices=["show", "set", "reset"])
     s.add_argument("key", nargs="?")

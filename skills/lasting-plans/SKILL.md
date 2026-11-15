@@ -35,7 +35,7 @@ don't dump the whole library into context.
 | Text that was deleted since | `lasting-plans search "<words>" --history` |
 | Plans from a period | `lasting-plans list --group-by month` (creation date; `unknown` bucket) |
 | Topic labels | `lasting-plans label` (list) · `lasting-plans list --label X` · `label <ref> --add X` |
-| Health / something pending | `lasting-plans doctor` |
+| Health / something pending | `lasting-plans doctor` — automatic: `lasting-plans repair` runs it on every watcher/hook pass; the banner speaks only when it could not fix something |
 | Import right now | `lasting-plans sync` |
 | Record a known date or tag | `lasting-plans meta <ref> --created DATE --modified DATE --tag T` |
 | Filed in the wrong archive | `lasting-plans reclassify` (lists), then `reclassify <ref> plan\|playbook` |

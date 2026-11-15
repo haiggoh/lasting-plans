@@ -76,6 +76,54 @@ class ConfigError(Exception):
     pass
 
 
+# The single source for each user-facing behaviour: (key, label, choices, explanation).
+# choices: ["on","off"] for a toggle, [("value","description"), ...] for a choice row,
+# ["int"] for an integer. `settings show` and the `behaviour` menu both read this table.
+BEHAVIOUR_SETTINGS = [
+    ("auto_repair", "Fix problems automatically in the background", ["on", "off"],
+     "off: the banner lists pending items again, as before 2.0."),
+    ("archive_deletions", "When a document vanishes from the backup",
+     [("restore-unless-trashed", "restore it, unless you put it in the Trash"),
+      ("restore", "always restore it"),
+      ("honor", "leave it deleted (Git keeps it)")], ""),
+    ("auto_sort", "Sort plans into folders", ["on", "off"],
+     "moves completed plans to _ARCHIVED/ and playbooks to _PLAYBOOKS/. Moves only, never deletes "
+     "anything. Not related to Claude Code's 30-day cleanup, which this plugin protects you from."),
+    ("cleanup_protection", "Protect plans from Claude Code's 30-day cleanup",
+     [("before", "move plans into _SAVED-FROM-CLEANUP/ shortly before the cleanup would delete them (dates and colour labels kept)"),
+      ("after", "only put them back there after the cleanup deleted them"),
+      ("off", "leave them; they stay only in the backup")], ""),
+    ("complete_quiet_days", "Days a finished-looking plan waits before it is archived", ["int"], ""),
+    ("alert_after_hours", "Hours a problem must persist before the banner mentions it", ["int"], ""),
+]
+
+BEHAVIOUR_LABELS = {key: label for key, label, _c, _e in BEHAVIOUR_SETTINGS}
+
+
+def validate(cfg):
+    """Raise ConfigError on any invalid value. Called by load() and by every write path."""
+    for k, t in TYPES.items():
+        if not isinstance(cfg.get(k), t):
+            raise ConfigError("config key %r has wrong type %s" % (k, type(cfg.get(k)).__name__))
+    if cfg["remote_push"] not in ("auto", "manual"):
+        raise ConfigError("remote_push must be auto or manual")
+    if set(cfg["remotes"]) - {"plan", "playbook"}:
+        raise ConfigError("remotes keys must be plan/playbook")
+    if cfg["interval_seconds"] < 60:
+        raise ConfigError("interval_seconds must be >= 60")
+    if cfg["alert_after_hours"] < 1:
+        raise ConfigError("alert_after_hours must be >= 1")
+    if cfg["alert_min_attempts"] < 1:
+        raise ConfigError("alert_min_attempts must be >= 1")
+    if cfg["complete_quiet_days"] < 0:
+        raise ConfigError("complete_quiet_days must be >= 0")
+    if cfg["archive_deletions"] not in ("restore-unless-trashed", "restore", "honor"):
+        raise ConfigError("archive_deletions must be restore-unless-trashed, restore or honor")
+    if cfg["cleanup_protection"] not in ("before", "after", "off"):
+        raise ConfigError("cleanup_protection must be before, after or off")
+    return cfg
+
+
 def load():
     """Defaults overlaid with the user file. Unknown keys are kept, never dropped."""
     cfg = dict(DEFAULTS)
@@ -98,26 +146,7 @@ def load():
         cfg["retired_archives"] = [user["playbooks_root"]]
     if cfg.get("remote") is None and isinstance((cfg.get("remotes") or {}).get("plan"), str):
         cfg["remote"] = cfg["remotes"]["plan"]
-    for k, t in TYPES.items():
-        if not isinstance(cfg.get(k), t):
-            raise ConfigError("config key %r has wrong type %s" % (k, type(cfg.get(k)).__name__))
-    if cfg["remote_push"] not in ("auto", "manual"):
-        raise ConfigError("remote_push must be auto or manual")
-    if set(cfg["remotes"]) - {"plan", "playbook"}:
-        raise ConfigError("remotes keys must be plan/playbook")
-    if cfg["interval_seconds"] < 60:
-        raise ConfigError("interval_seconds must be >= 60")
-    if cfg["alert_after_hours"] < 1:
-        raise ConfigError("alert_after_hours must be >= 1")
-    if cfg["alert_min_attempts"] < 1:
-        raise ConfigError("alert_min_attempts must be >= 1")
-    if cfg["complete_quiet_days"] < 0:
-        raise ConfigError("complete_quiet_days must be >= 0")
-    if cfg["archive_deletions"] not in ("restore-unless-trashed", "restore", "honor"):
-        raise ConfigError("archive_deletions must be restore-unless-trashed, restore or honor")
-    if cfg["cleanup_protection"] not in ("before", "after", "off"):
-        raise ConfigError("cleanup_protection must be before, after or off")
-    return cfg
+    return validate(cfg)
 
 
 def atomic_write(path, text, mode=0o644):

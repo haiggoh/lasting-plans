@@ -7,13 +7,22 @@ plans folder (`~/.claude/plans`) that are older than `cleanupPeriodDays`, which 
 documents vanish and nothing tells you. Lasting Plans keeps a permanent, visible copy of
 every plan somewhere the sweep never looks:
 
-- `~/Claude-plans`: ordinary plans
-- `~/Claude-playbooks`: playbooks, handbooks, workflows and manuals
+- `~/Claude-plans`: **one archive** whose paths mirror your plans folder exactly
+  (`~/.claude/plans/_PLAYBOOKS/x.md` is archived at `~/Claude-plans/_PLAYBOOKS/x.md`).
+  Playbooks, handbooks, workflows and manuals are a *label* on the sidecar, not a
+  separate folder of their own.
 
-Each is its own **local Git repo**, so every revision is kept. Nothing is ever deleted
-when the source copy disappears. It needs no account and no network. Local Git history is
-*not* an off-machine backup; for that, add an optional **private** remote
+The archive is its own **local Git repo**, so every revision is kept. Nothing is ever
+deleted when the source copy disappears. It needs no account and no network. Local Git
+history is *not* an off-machine backup; for that, add an optional **private** remote
 ([Remote backup](#remote-backup-optional)).
+
+**Upgrading from 1.x?** The two archives (`~/Claude-plans` + `~/Claude-playbooks`) are
+merged automatically into the one mirrored archive on the first watcher/hook pass
+(`lasting-plans repair` does it now): full history of both is kept, every document moves
+to its source path, and `~/Claude-playbooks` becomes a symlink to
+`~/Claude-plans/_PLAYBOOKS` (the old folder is moved — never deleted — under the state
+dir's `retired-archives/`). The GitHub repos are left untouched.
 
 ## Install
 
@@ -24,7 +33,7 @@ when the source copy disappears. It needs no account and no network. Local Git h
 
 The first Claude Code session after install sets everything up:
 
-1. It creates both archive repos, refusing to touch a non-empty folder that isn't
+1. It creates the archive repo, refusing to touch a non-empty folder that isn't
    already a Git repo, or one nested inside another repo.
 2. It imports every plan in your plans folder, subfolders included.
 3. On macOS, it installs the watcher LaunchAgent, `com.haiggoh.lasting-plans`.
@@ -39,7 +48,7 @@ lasting-plans settings set scheduler_enabled false    # and keep it off on later
 ## How it stays current
 
 The watcher is a **watch folder**, not a timer. It holds kqueue watches on every
-directory in the source tree and in both archives, so it wakes the moment a file
+directory in the source tree and the archive, so it wakes the moment a file
 *enters, leaves, or moves between subdirectories*. A catch-up scan every
 `interval_seconds` (default 900 = 15 min) picks up in-place edits, which don't change a
 directory, and anything missed while the Mac slept. It runs without Claude Code open.
@@ -47,6 +56,22 @@ directory, and anything missed while the Mac slept. It runs without Claude Code 
 The LaunchAgent runs a stable copy of the code in `~/.local/share/lasting-plans/`, never
 the versioned plugin cache, so a plugin update can't leave it pointing at a deleted path.
 The session hook re-stages that copy when the plugin version changes.
+
+## Background repair (no tasks on your plate)
+
+After every watcher/hook scan, Lasting Plans runs a **safe, idempotent repair pass in the
+background** (`lasting-plans repair` runs it now; `--dry-run` previews it): it migrates a
+v1 two-archive layout, commits pending copies, restores vanished archive documents
+(unless you put them in the Trash), re-applies lost dates/tags, sorts completed plans into
+`_ARCHIVED/` and playbooks into `_PLAYBOOKS/`, moves at-risk top-level plans into
+`_SAVED-FROM-CLEANUP/` *before* Claude Code's 30-day cleanup deletes them, and puts back
+any it already took. Every fix is logged (`repairs.jsonl`) and shown in `lasting-plans doctor`.
+
+The session banner speaks **only when auto-repair could not fix something** (after
+`alert_min_attempts` attempts and `alert_after_hours` hours) or for a true emergency —
+never for routine pending work. Opt out any time in the menu (`lasting-plans` on a TTY →
+`behaviour`) or with `settings set auto_repair off`; then the banner lists pending items
+again, as before 2.0.
 
 ## What it guarantees
 
@@ -61,6 +86,8 @@ The session hook re-stages that copy when the plugin version changes.
 - **Symlinks, hidden files and anything outside the source root are ignored.**
 - **Half-written files wait.** A file must be unchanged for 2 s and read identically
   before it is imported.
+- **Case-only renames are one rename.** Renaming `_playbooks` to `_PLAYBOOKS` in the
+  source moves the archive entries in a single `R` commit — never a `… (2).md` copy.
 
 ## Metadata Git can't store
 
@@ -113,14 +140,14 @@ additive: a tag is never removed from an archive folder.
 Each archive can have its own **private** Git remote. Nothing is pushed until you set one.
 
 ```
-lasting-plans remote create-github plan  you/Claude-plans      # creates it PRIVATE (needs gh)
-lasting-plans remote create-github playbook you/Claude-playbooks
-lasting-plans remote set plan git@host:you/plans.git [--confirm-private]
+lasting-plans remote create-github you/Claude-plans            # creates it PRIVATE (needs gh)
+lasting-plans remote set git@host:you/plans.git [--confirm-private]
 lasting-plans remote status [--verify]     # --verify reads the remote's tip now
-lasting-plans remote push [plan|playbook]
-lasting-plans remote off  [plan|playbook]  # keeps the local archive; deletes nothing remotely
-lasting-plans remote clone plan URL        # new machine: clone + re-apply dates and tags
+lasting-plans remote push
+lasting-plans remote off                   # keeps the local archive; deletes nothing remotely
+lasting-plans remote clone URL             # new machine: clone + re-apply dates and tags
 ```
+(The legacy `plan`/`playbook` kind argument is still accepted and ignored — there is one archive now.)
 
 - **Private only.** A GitHub URL is checked with `gh`; a public repo is refused. A URL whose
   privacy can't be checked needs `--confirm-private`.

@@ -352,6 +352,12 @@ def _record(issue, ok, note):
     _save_ledger(led)
 
 
+def note_issue(kind, path, detail, severity="routine"):
+    """Record an issue without fixing it (watcher-install failure, hook exception…)."""
+    _record({"key": "%s:%s" % (kind, path), "kind": kind, "path": path, "detail": detail,
+             "severity": severity}, False, "noted")
+
+
 def alerts(now=None):
     """Issues the banner may speak about: emergencies immediately, routines only after
     alert_min_attempts attempts AND alert_after_hours of age."""

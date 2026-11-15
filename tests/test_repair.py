@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -417,3 +418,172 @@ def test_settings_parse(home):
     p.write_text(json.dumps({"alert_after_hours": 0}))
     with pytest.raises(cfgmod.ConfigError):
         cfgmod.load()
+
+
+# ------------------------------------------------------------------ Task 6: wiring, hook, menu
+
+def run_cli(home, *args, stdin=None):
+    env = dict(os.environ, HOME=str(home))
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    env["LASTING_PLANS_SETTLE_SECONDS"] = "0"
+    env["LASTING_PLANS_TRASH_DIR"] = str(home / ".Trash")
+    return subprocess.run([sys.executable, os.path.join(ROOT, "bin", "lasting-plans")] + list(args),
+                          capture_output=True, text=True, env=env, input=stdin, timeout=60)
+
+
+def run_hook(home):
+    env = dict(os.environ, HOME=str(home))
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    env["LASTING_PLANS_CONFIG_DIR"] = str(home / ".config" / "lasting-plans")
+    env["LASTING_PLANS_STATE_DIR"] = str(home / ".state")
+    env["LASTING_PLANS_SETTLE_SECONDS"] = "0"
+    env["LASTING_PLANS_TRASH_DIR"] = str(home / ".Trash")
+    return subprocess.run([sys.executable, os.path.join(ROOT, "hooks", "session-start.py")],
+                          capture_output=True, text=True, env=env, timeout=120)
+
+
+def _hook_config(home, extra=None):
+    p = home / ".config" / "lasting-plans" / "config.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    d = {"scheduler_enabled": False}
+    d.update(extra or {})
+    p.write_text(json.dumps(d))
+
+
+def test_hook_silent_when_repair_fixes(home, monkeypatch):
+    _hook_config(home)
+    put(src(home) / "a.md", "# a\n")
+    for k in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.delenv(k)
+    scan()                                   # uncommitted wedge (no identity)
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "F")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "f@example.invalid")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "F")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "f@example.invalid")
+    r = run_hook(home)
+    assert r.returncode == 0
+    assert "pending" not in r.stdout and "⚠" not in r.stdout
+    assert git(arch(home), "status", "--porcelain") == ""   # the hook's repair pass committed it
+
+
+def test_hook_alerts_when_stuck(home):
+    import datetime
+    _hook_config(home)
+    # an over-size file reports "will retry" in EVERY scan — a genuinely stuck pending
+    put(src(home) / "big.md", "x" * (6 * 1024 * 1024))
+    scan()
+    old = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    (home / ".state").mkdir(parents=True, exist_ok=True)
+    (home / ".state" / "repair-state.json").write_text(json.dumps({
+        "transient:big.md": {"kind": "transient", "path": "big.md", "detail": "will retry", "severity": "routine",
+                             "first_seen_utc": old, "attempts": 3, "last_attempt_utc": old}}))
+    r = run_hook(home)
+    assert r.returncode == 0, r.stderr
+    assert "auto-repair could not fix" in r.stdout
+
+
+def test_hook_migrates_v1_silently(home, monkeypatch):
+    from lasting_plans import migrate
+    monkeypatch.setattr(migrate.scheduler, "install", lambda lib: (True, "ok"))
+    monkeypatch.setattr(migrate.scheduler, "supported", lambda: True)
+    sys.path.insert(0, os.path.join(ROOT, "tests"))
+    from test_migrate import make_v1_layout
+    make_v1_layout(home)
+    p = home / ".config" / "lasting-plans" / "config.json"
+    d = json.loads(p.read_text())
+    d["scheduler_enabled"] = False          # subprocess hook cannot see monkeypatched scheduler
+    p.write_text(json.dumps(d))
+    r = run_hook(home)
+    assert r.returncode == 0, r.stderr
+    assert "⚠" not in r.stdout
+    assert cfgmod.load()["layout"] == 2
+
+
+def test_hook_help_runs_nothing(home):
+    r = run_hook.__wrapped__ if False else subprocess.run(
+        [sys.executable, os.path.join(ROOT, "hooks", "session-start.py"), "--help"],
+        capture_output=True, text=True, env=dict(os.environ, HOME=str(home),
+                                                 LASTING_PLANS_CONFIG_DIR=str(home / ".config" / "lp"),
+                                                 LASTING_PLANS_STATE_DIR=str(home / ".state")),
+        timeout=30)
+    assert r.returncode == 0 and "SessionStart" in r.stdout
+    assert not (home / ".state").exists()
+
+
+def test_cli_repair_dry_run_exit_code(home, monkeypatch):
+    put(src(home) / "a.md", "# a\n")
+    for k in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.delenv(k)
+    scan()
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "F")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "f@example.invalid")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "F")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "f@example.invalid")
+    before = git(arch(home), "status", "--porcelain")
+    r = run_cli(home, "repair", "--dry-run")
+    assert r.returncode == 5                                   # remaining issues listed, nothing written
+    assert git(arch(home), "status", "--porcelain") == before
+    r = run_cli(home, "repair")
+    assert r.returncode == 0
+    assert git(arch(home), "status", "--porcelain") == ""
+
+
+# ------------------------------------------------------------------ behaviour menu
+
+def test_behaviour_table_covers_new_settings():
+    for key, label, choices, _expl in cfgmod.BEHAVIOUR_SETTINGS:
+        assert key in cfgmod.DEFAULTS, key
+        assert label
+        if choices == ["on", "off"]:
+            assert isinstance(cfgmod.parse_value(key, "on"), bool)
+            assert isinstance(cfgmod.parse_value(key, "off"), bool)
+            continue
+        for c in choices:
+            val = c[0] if isinstance(c, tuple) else c
+            if val == "int":
+                assert isinstance(cfgmod.parse_value(key, "5"), int)
+            else:
+                cfgmod.parse_value(key, val)      # must not raise
+
+
+def test_behaviour_menu_toggle_writes_setting(home, monkeypatch, capsys):
+    import argparse
+    import io
+    from lasting_plans import cli
+
+    class TTY(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(sys, "stdin", TTY("1\nq\n"))
+    monkeypatch.setattr(sys, "stdout", TTY())
+    rc = cli.cmd_behaviour(argparse.Namespace())
+    assert rc == 0
+    d = json.loads((home / ".config" / "lasting-plans" / "config.json").read_text())
+    assert d["auto_repair"] is False
+
+
+def test_behaviour_menu_rejects_invalid(home, monkeypatch, capsys):
+    import argparse
+    import io
+    from lasting_plans import cli
+
+    class TTY(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(sys, "stdin", TTY("5\n0\nq\n"))   # row 5 = alert_after_hours, 0 is invalid
+    out = TTY()
+    monkeypatch.setattr(sys, "stdout", out)
+    rc = cli.cmd_behaviour(argparse.Namespace())
+    assert rc == 0
+    p = home / ".config" / "lasting-plans" / "config.json"
+    if p.exists():
+        assert json.loads(p.read_text()).get("alert_after_hours", 24) != 0 or "alert_after_hours" not in json.loads(p.read_text())
+    assert cfgmod.load()["alert_after_hours"] == 24       # unchanged
+
+
+def test_settings_show_uses_table_labels(home):
+    r = run_cli(home, "settings", "show")
+    assert r.returncode == 0
+    assert "Fix problems automatically in the background" in r.stdout
