@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3.1] — 2026-11-15
+
+### Added — Phase 5 Wave C: committed portable package (COORDINATION C1/C2)
+
+- New `scripts/build-portable.py` (from the reviewed pilot pattern) generates the committed
+  `portable/` package: same-name manifest, VERSION surface, the skill, the SessionStart hook,
+  the CLI at `scripts/lasting-plans` (moved from `bin/`), and the 14-module
+  `lib/lasting_plans/` closure at the portable ROOT — both the CLI and the hook resolve it as
+  `dirname(HERE)/lib`, which is one level up from `scripts/` and `hooks/` alike, so the
+  verbatim copies work unchanged. Emits `portable/PORTABLE-BUILD.json`
+  (haiggoh-portable-build/1) and a deterministic dist zip.
+- `tests/test_portable.py` pins freshness, same-name manifest, no `bin/`, the host->portable
+  set (byte-identical), closure, C2 schema, deterministic zip, and a functional check that
+  the portable CLI lists its full subcommand tree from the portable root.
+
 ## [1.3.0] — 2026-11-14
 
 ### Added — `plan-airtight`, the execution-safety layer for handed-off plans

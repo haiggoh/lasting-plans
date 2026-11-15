@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""lasting-plans — CLI entry point (on the Bash-tool PATH via the plugin's bin/). See --help."""
+import os
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "lib"))
+
+from lasting_plans.cli import main  # noqa: E402
+
+sys.exit(main())

@@ -1,0 +1,116 @@
+{
+  "builder": "scripts/build-portable.py",
+  "builder_version": "1.0.0",
+  "components": [
+    {
+      "adaptation_class": "mechanical",
+      "evidence_level": "source-inspected",
+      "kind": "manifest",
+      "notes": "same name+version as the host manifest; an installed marketplace plugin wins over a synced copy in Code, so no double-run",
+      "path": ".claude-plugin/plugin.json",
+      "surfaces": {
+        "chat": true,
+        "code": true,
+        "cowork": true
+      }
+    },
+    {
+      "adaptation_class": "native-unchanged",
+      "evidence_level": "source-inspected",
+      "kind": "data",
+      "notes": "the repo's version surface (rtc-ship version_file); copied verbatim",
+      "path": "VERSION",
+      "surfaces": {
+        "chat": false,
+        "code": true,
+        "cowork": true
+      }
+    },
+    {
+      "adaptation_class": "native-unchanged",
+      "evidence_level": "source-inspected",
+      "kind": "skill",
+      "notes": "pure guidance; strict-YAML frontmatter pinned by tests",
+      "path": "skills/lasting-plans/SKILL.md",
+      "surfaces": {
+        "chat": true,
+        "code": true,
+        "cowork": true
+      }
+    },
+    {
+      "adaptation_class": "native-unchanged",
+      "evidence_level": "source-inspected",
+      "kind": "hooks",
+      "notes": "SessionStart hook; hooks stay in hooks/",
+      "path": "hooks/hooks.json",
+      "surfaces": {
+        "chat": false,
+        "code": true,
+        "cowork": true
+      }
+    },
+    {
+      "adaptation_class": "native-unchanged",
+      "evidence_level": "source-inspected",
+      "kind": "hook-script",
+      "notes": "resolves ../lib from hooks/ \u2014 works unchanged in the portable layout",
+      "path": "hooks/session-start.py",
+      "surfaces": {
+        "chat": false,
+        "code": true,
+        "cowork": true
+      }
+    },
+    {
+      "adaptation_class": "mechanical",
+      "evidence_level": "source-inspected",
+      "kind": "script",
+      "notes": "CLI moved bin/ -> scripts/ per C1; resolves ../lib from scripts/ unchanged",
+      "path": "scripts/lasting-plans",
+      "surfaces": {
+        "chat": false,
+        "code": true,
+        "cowork": true
+      }
+    },
+    {
+      "adaptation_class": "native-unchanged",
+      "evidence_level": "source-inspected",
+      "kind": "library",
+      "notes": "the 14-module engine at the portable root; imported by CLI and hook via dirname(HERE)/lib",
+      "path": "lib/lasting_plans/",
+      "surfaces": {
+        "chat": false,
+        "code": true,
+        "cowork": true
+      }
+    }
+  ],
+  "files": {
+    ".claude-plugin/plugin.json": "0640e2c247e2dc6ab0f2f1b2f4780c40b388238b36576fdf7cd1923c6e84eac6",
+    "VERSION": "05c64cb6a9476411f5c1be2445cb7e163b575262cf76c1c116348335d4f9686e",
+    "hooks/hooks.json": "032bb93a8920f0024af3af2611cc191572e2ed2b9ba9a9cb47bfd8cc46bd1a9f",
+    "hooks/session-start.py": "6c6d91010ffa263b1139e9699e18496a6d6d2234d9eab21a1d3306f8c7db3e7d",
+    "lib/lasting_plans/__init__.py": "587c72e300117cee58263b72976fd94452c0b4767e9287a0685561a13c271dea",
+    "lib/lasting_plans/classify.py": "31274b54f82cc2f5ed2bd859f2a7da1ca06e1d604befdb0d1be920d7d28bacce",
+    "lib/lasting_plans/cli.py": "a3aacd5c32b984c55bc47bae0f4f9951b13b29acd897980929873fafa90a06d3",
+    "lib/lasting_plans/config.py": "97435b9ed6507bbf0ebaef482a002808946e8c46e0405457edba745e028dcebd",
+    "lib/lasting_plans/engine.py": "d211d6f248de5cd6b9cb0400f381889f5aac782ba5b72977ec4fd5fb4f62d5a4",
+    "lib/lasting_plans/gitrepo.py": "bab105ffd093edde5dc886bbb780d1c77330f33a308193994c70111181a43c14",
+    "lib/lasting_plans/library.py": "f4252456a3e66741a11e80233adadd065652a40a9457637f3f7445224a929b67",
+    "lib/lasting_plans/metadata.py": "9085aa7bc1a1369a80d774ace435199ba2c3972464a6b7327b2ae9f85609b787",
+    "lib/lasting_plans/recover.py": "18c025489c6b743a6d9c8de2db4e87cc784f0c53ae369e903b71a97ede1eaaf5",
+    "lib/lasting_plans/remote.py": "e0558428f1111700e59f3ad94386c18ee19ca58a3556d65f7c945779b970e6f4",
+    "lib/lasting_plans/scheduler.py": "02762ee628ca422f728049e0a87b9973c8a63aa3beed93869b2bc93111ccabd8",
+    "lib/lasting_plans/tools.py": "492ee120689deb295bf67808ff3166afd2638bf05a98954ebb0a1bb8f066c583",
+    "lib/lasting_plans/watch.py": "1819f60286b32f8d6ec8f7e488a69b8ef0db580f193d57a1a65d6a3dc7ead06b",
+    "lib/lasting_plans/waypoints.py": "604d7173d6f4c9ba2e898097a9f5e21a2b22f646dd0420ebedf3111f4fdfb28a",
+    "scripts/lasting-plans": "e6401308f0aaafe1257ae0cd41225fa66581bcd46a0b7f7d8ecf95026726a402",
+    "skills/lasting-plans/SKILL.md": "6331c61341c7a40c418630fcd5455b8c0aab0706927095e394169fd5b9840fd8"
+  },
+  "schema": "haiggoh-portable-build/1",
+  "source_commit": "78d6a0ceb159ab837838059c50cd160c35869081",
+  "source_repo": "haiggoh/lasting-plans",
+  "transform_version": "1"
+}

@@ -15,6 +15,8 @@
 
 ---
 
+### Version 1.3.1 — Phase 5 Wave C portable package (2026-11-15) ✅
+
 ### Version 1.0.0 — Qualification/migration (Phase 9) (2026-10-02) ✅ COMPLETE
 - **Migration path:** `lasting-plans migrate [--apply]` detects existing Git repo in Claude's
   plans folder, performs read-only audit of all files, and imports missing files on `--apply`.
