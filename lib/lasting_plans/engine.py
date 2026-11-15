@@ -976,6 +976,8 @@ def doctor(lib):
     add("document ids unique", len(ids) == len(set(ids)))
     miss = [d.sc["archive_relpath"] for d in lib.docs if not os.path.exists(d.path)]
     add("every archive document present", not miss, ", ".join(miss[:5]))
+    for m in miss:
+        checks[-1].setdefault("missing", []).append(m)
     st = status(lib)
     add("every source document protected", not st["unprotected"], "%d unprotected" % len(st["unprotected"]))
     for name, hit, sys_path in tools.shadows():

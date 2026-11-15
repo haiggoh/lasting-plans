@@ -229,6 +229,7 @@ def _step_relocate(lib, plans_root):
         if old == actual and os.path.exists(d.path):
             continue
         taken.discard(old)
+        actual = engine.archive_rel_for(lib.cfg, actual)   # strip a rescue-subdir prefix: the backup never mirrors it
         actual_abs = os.path.join(plans_root, actual)
         if (os.path.exists(d.path) and os.path.exists(actual_abs)
                 and not os.path.samefile(d.path, actual_abs)
@@ -254,7 +255,9 @@ def _step_relocate(lib, plans_root):
     if not pairs:
         return ["no relocations needed"]
     paths = [x for pair in pairs for x in pair] + sidecars
-    gitrepo.git(plans_root, "add", "-A", "--", *[p[1] for p in pairs] + sidecars)
+    add_paths = [p for p in [x[1] for x in pairs] + sidecars if os.path.exists(os.path.join(plans_root, p))]
+    if add_paths:
+        gitrepo.git(plans_root, "add", "-A", "--", *add_paths)
     gitrepo.commit_staged_paths(plans_root, paths, "migrate: archive paths now mirror the source")
     return ["relocated %d document(s) to their source paths" % len(pairs)]
 

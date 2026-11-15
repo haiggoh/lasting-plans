@@ -64,10 +64,8 @@ def collect_issues(lib, res=None):
         if name == "archive has Git identity":
             add("no_identity", lib.root, c.get("detail") or "")
         elif name == "every archive document present":
-            for m in (c.get("detail") or "").split(","):
-                m = m.strip()
-                if m:
-                    add("archive_missing", m, "missing from the archive")
+            for m in (c.get("missing") or []):
+                add("archive_missing", m, "missing from the archive")
         elif name == "stored types match the classifier":
             add("type_mismatch", lib.root, (c.get("detail") or "")[:200])
         elif name == "archive is a Git repo":
@@ -86,6 +84,18 @@ def collect_issues(lib, res=None):
     for d in lib.docs:
         if d.sc.get("metadata_unapplied"):
             add("metadata_unapplied", d.sc["archive_relpath"], ",".join(d.sc["metadata_unapplied"]))
+    # wedge junk from the crashed 1.x/2.0.0 runs: sidecars pointing at "(N)" copies or
+    # ".lp-case-tmp" leftovers while the base file is tracked
+    import re as _re
+    for d in lib.docs:
+        ar = d.sc["archive_relpath"]
+        ar2 = ar[:-len(".lp-case-tmp")] if ar.endswith(".lp-case-tmp") else ar
+        m = _re.match(r"^(.*?)( \(\d+\))?(\.(md|markdown|txt)(\.[^/]*)?)$", ar2, _re.I)
+        if not m:
+            continue
+        base = m.group(1) + (m.group(3) or "")
+        if base != ar and os.path.exists(os.path.join(lib.root, base)):
+            add("stale_wedge", ar, "wedge copy; base %s exists" % base)
     # empty folders in the archive (no docs, nothing tracked under them)
     if os.path.isdir(os.path.join(lib.root, ".git")):
         tracked = {p for p in gitrepo.git(lib.root, "ls-files", "-z").stdout.split("\0") if p}
@@ -272,6 +282,28 @@ def _fix_metadata_unapplied(lib, issue, backup):
     return True, "metadata applied and verified"
 
 
+def _fix_stale_wedge(lib, issue, backup):
+    """Repoint a sidecar from a wedge copy ((N).md / .lp-case-tmp) to the tracked base
+    file and git-rm the junk copy. Never touches content."""
+    import re as _re
+    ar = issue["path"]
+    ar2 = ar[:-len(".lp-case-tmp")] if ar.endswith(".lp-case-tmp") else ar
+    m = _re.match(r"^(.*?)( \(\d+\))?(\.(md|markdown|txt)(\.[^/]*)?)$", ar2, _re.I)
+    base = m.group(1) + (m.group(3) or "")
+    if not os.path.exists(os.path.join(lib.root, base)):
+        return False, "base %s missing" % base
+    doc = next((d for d in lib.docs if d.sc["archive_relpath"] == ar), None)
+    if os.path.exists(os.path.join(lib.root, ar)):
+        gitrepo.git(lib.root, "rm", "-q", "-f", "--", ar)          # stages the removal, deletes the junk file
+    if doc is not None:
+        doc.sc["archive_relpath"] = base
+        engine.write_sidecar(lib.root, doc.sc)
+        gitrepo.git(lib.root, "add", "-A", "--", engine.sidecar_rel(doc.id))
+        gitrepo.commit_staged_paths(lib.root, [engine.sidecar_rel(doc.id), ar],
+                                    "repair: dropped wedge copy %s (base %s tracked)" % (ar, base))
+    return True, "repointed to %s, junk removed" % base
+
+
 def _fix_transient(lib, issue, backup):
     return False, "waits for next pass"
 
@@ -291,13 +323,14 @@ FIXERS = {
     "watcher_down": _fix_watcher_down,
     "cleanup_deletion": _fix_cleanup_deletion,
     "metadata_unapplied": _fix_metadata_unapplied,
+    "stale_wedge": _fix_stale_wedge,
     "transient": _fix_transient,
     "emergency": _fix_emergency,
 }
 
 FIXER_ORDER = ["migration_pending", "sidecar_corrupt", "no_identity", "archive_missing",
                "uncommitted", "cleanup_deletion", "type_mismatch", "empty_folder",
-               "metadata_unapplied", "watcher_down",
+               "metadata_unapplied", "stale_wedge", "watcher_down",
                # recorded even when nothing can be fixed: without these the ledger never
                # learns about them and alerts() could never fire (transient waits by design;
                # emergency alerts immediately)

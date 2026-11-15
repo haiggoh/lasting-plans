@@ -265,3 +265,16 @@ def test_move_path_staged_but_never_committed(repo):
     gitrepo.move_path(str(repo), "old/B.md", "OLD/B.md")   # case-only: the live failure
     assert (repo / "OLD" / "B.md").read_text(encoding="utf-8") == "untracked wedge copy\n"
     assert "OLD" in os.listdir(repo) and "old" not in os.listdir(repo)
+
+
+def test_move_path_untracked_plain_rename(repo):
+    """2.0.3: untracked old path on a NON-case-only move must also avoid git mv."""
+    d = repo / "old"
+    d.mkdir()
+    (d / "A.md").write_text("one\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "init")
+    (d / "B.md").write_text("untracked\n", encoding="utf-8")   # untracked
+    gitrepo.move_path(str(repo), "old/B.md", "new/B.md")
+    assert (repo / "new" / "B.md").exists()
+    assert not (repo / "old" / "B.md").exists()

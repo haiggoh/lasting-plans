@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.0.3] — 2026-11-16 — hotfix: live-migration robustness (rehearsed on a full copy of live state)
+
+- `move_path`: paths not in HEAD (untracked/staged-new wedge copies) move via
+  os.rename+add instead of `git mv` ("not under version control"); stale `.lp-case-tmp`
+  temps from crashed runs are removed first (git rm when tracked).
+- `commit_staged_paths`: no index_case mapping (it collapsed rename pairs); the dirty
+  check only fails on staged leftovers — unstaged deletions of moved-away paths are
+  committed by the next pass.
+- `commit_paths` keeps its index_case mapping (wrong-case commits) — a refactor had
+  briefly removed it.
+- `migrate._step_relocate` maps the rescue subdir prefix through `archive_rel_for`
+  (backup never mirrors it) and only `git add`s paths that exist in the archive.
+- doctor's "archive documents present" carries the missing list as a real list
+  (comma-containing filenames no longer split); new `stale_wedge` repair kind repoints
+  sidecars from `(N).md`/`.lp-case-tmp` junk to the tracked base and git-rms the copy.
+
 ## [2.0.2] — 2026-11-15 — hotfix
 
 - `gitrepo.move_path` no longer calls `git mv` for paths not in HEAD (staged-new or

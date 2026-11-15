@@ -100,13 +100,18 @@ def move_path(root, old, new):
     os.makedirs(os.path.dirname(new_abs) or root, exist_ok=True)
     head = git(root, "rev-parse", "--verify", "-q", "HEAD", check=False).stdout.strip()
     in_head = bool(head) and bool(git(root, "ls-tree", head, "--", old, check=False).stdout.strip())
-    if old.casefold() == new.casefold() and in_head:
-        tmp = new + ".lp-case-tmp"
-        git(root, "mv", "--", old, tmp)
-        git(root, "mv", "--", tmp, new)
-    elif old.casefold() == new.casefold():
+    if not in_head:
+        # staged-new or untracked: `git mv` refuses ("not under version control")
         os.rename(os.path.join(root, old), new_abs)
         git(root, "add", "-A", "--", old, new, check=False)
+    elif old.casefold() == new.casefold():
+        tmp = new + ".lp-case-tmp"
+        if os.path.exists(os.path.join(root, tmp)):
+            git(root, "rm", "-q", "-f", "--", tmp, check=False)   # stale temp from a crashed run (tracked)
+            if os.path.exists(os.path.join(root, tmp)):
+                os.remove(os.path.join(root, tmp))               # untracked leftover
+        git(root, "mv", "--", old, tmp)
+        git(root, "mv", "--", tmp, new)
     else:
         git(root, "mv", "--", old, new)
     old_parent, new_parent = os.path.dirname(old), os.path.dirname(new)
@@ -155,7 +160,9 @@ def commit_staged_paths(root, paths, message):
     temporarily unstaging the rest — and restores those via a cached patch, so
     the user's other staged work is never committed nor lost from the index.
     Returns the SHA."""
-    paths = index_case(root, list(paths))
+    # no index_case mapping here: it would collapse a rename pair (old casefolds to new)
+    # and unstage the old path's deletion — callers pass current-spelling paths
+    paths = list(paths)
     staged = [p for p in git(root, "diff", "--cached", "--name-only", "-z").stdout.split("\0") if p]
     keep = set(paths)
     non_keep = [p for p in staged if p not in keep]
@@ -173,8 +180,11 @@ def commit_staged_paths(root, paths, message):
     if patch:
         git(root, "apply", "--cached", "--binary", input=patch, check=False)
     left = git(root, "status", "--porcelain", "-z", "--", *paths).stdout
-    if left.strip("\0"):
-        raise GitError("paths still dirty after commit %s: %r" % (sha[:8], left[:200]))
+    # only STAGED leftovers mean the commit missed them; an unstaged ' D' deletion of a
+    # moved-away old path is committed by the next pass's catch-up
+    bad = [e for e in left.split("\0") if e and e[0] not in " ?"]
+    if bad:
+        raise GitError("paths still staged-dirty after commit %s: %r" % (sha[:8], bad[:3]))
     return sha
 
 
