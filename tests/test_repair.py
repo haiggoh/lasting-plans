@@ -282,3 +282,138 @@ def test_fix_transient_and_emergency_not_fixed(home, monkeypatch, tmp_path):
     assert iss[ekey]["severity"] == "emergency"
     fixed, _ = fix(home, ekey, home / "tmp", res)
     assert not fixed
+
+
+# ------------------------------------------------------------------ Task 5: loop, ledger, alerts
+
+def _ledger(home):
+    p = home / ".state" / "repair-state.json"
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
+def _journal(home):
+    p = home / ".state" / "repairs.jsonl"
+    return [json.loads(line) for line in p.read_text().splitlines() if line.strip()] if p.exists() else []
+
+
+def test_run_fixes_and_journals(home, monkeypatch):
+    put(src(home) / "a.md", "# a\n")
+    for k in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.delenv(k)
+    scan()                                   # leaves an uncommitted pending
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "F")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "f@example.invalid")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "F")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "f@example.invalid")
+    out = repair.run(engine.Library())
+    assert out["skipped"] is False
+    assert any(i["kind"] == "uncommitted" for i in out["fixed"])
+    assert git(arch(home), "status", "--porcelain") == ""
+    assert _ledger(home) == {}
+    events = [e["event"] for e in _journal(home)]
+    assert "fixed" in events
+    assert any(e["key"].startswith("uncommitted:") for e in _journal(home))
+
+
+def test_alert_needs_age_and_attempts(home):
+    import datetime
+    led = {
+        "x:old": {"kind": "uncommitted", "path": "x", "detail": "", "severity": "routine",
+                  "first_seen_utc": (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "attempts": 5, "last_attempt_utc": None},
+        "y:stuck": {"kind": "uncommitted", "path": "y", "detail": "", "severity": "routine",
+                    "first_seen_utc": (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "attempts": 3, "last_attempt_utc": None},
+    }
+    (home / ".state").mkdir(exist_ok=True)
+    (home / ".state" / "repair-state.json").write_text(json.dumps(led))
+    alerts = repair.alerts()
+    assert [a["key"] for a in alerts] == ["y:stuck"]     # 5 attempts but only 1h old ⇒ no alert
+
+
+def test_emergency_alerts_immediately(home):
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    led = {"emergency:git": {"kind": "emergency", "path": "git", "detail": "git missing", "severity": "emergency",
+                             "first_seen_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "attempts": 1, "last_attempt_utc": None}}
+    (home / ".state").mkdir(exist_ok=True)
+    (home / ".state" / "repair-state.json").write_text(json.dumps(led))
+    assert [a["key"] for a in repair.alerts()] == ["emergency:git"]
+
+
+def test_resolved_issue_resets_first_seen(home):
+    import datetime
+    old = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    led = {"uncommitted:gone.md": {"kind": "uncommitted", "path": "gone.md", "detail": "", "severity": "routine",
+                                   "first_seen_utc": old, "attempts": 9, "last_attempt_utc": None}}
+    (home / ".state").mkdir(exist_ok=True)
+    (home / ".state" / "repair-state.json").write_text(json.dumps(led))
+    put(src(home) / "a.md", "# a\n")
+    scan()
+    repair.run(engine.Library())                       # gone.md no longer an issue ⇒ resolved + journaled
+    assert "uncommitted:gone.md" not in _ledger(home)
+    assert any(e["event"] == "resolved" and e["key"] == "uncommitted:gone.md" for e in _journal(home))
+    # when it comes back (ledger entry was resolved away), first_seen must be fresh
+    put(src(home) / "gone.md", "# gone\n")
+    import lasting_plans.engine as _e
+    res = _e.ScanResult()
+    res.pending.append(("gone.md", "uncommitted: test"))
+    repair.run(engine.Library(), res)
+    e = _ledger(home).get("uncommitted:gone.md")
+    assert e and e["attempts"] == 1 and e["first_seen_utc"] != old
+
+
+def test_busy_lock_skips_without_counting(home):
+    put(src(home) / "a.md", "# a\n")
+    scan()
+    with engine.scan_lock():
+        out = repair.run(engine.Library())
+    assert out["skipped"] is True
+    assert not (home / ".state" / "repair-state.json").exists()   # ledger untouched
+
+
+def test_transient_never_alerts_early(home):
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    led = {"transient:a.md": {"kind": "transient", "path": "a.md", "detail": "will retry", "severity": "routine",
+                              "first_seen_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "attempts": 1, "last_attempt_utc": None}}
+    (home / ".state").mkdir(exist_ok=True)
+    (home / ".state" / "repair-state.json").write_text(json.dumps(led))
+    assert repair.alerts() == []
+
+
+def test_corrupt_ledger_is_backed_up_and_reset(home):
+    put(src(home) / "a.md", "# a\n")
+    scan()
+    (home / ".state").mkdir(exist_ok=True)
+    (home / ".state" / "repair-state.json").write_text("{garbage")
+    out = repair.run(engine.Library())
+    assert out["skipped"] is False
+    baks = [f for f in os.listdir(home / ".state") if f.startswith("repair-state.json.bak")]
+    assert baks
+    assert _ledger(home) == {} or isinstance(_ledger(home), dict)
+
+
+def test_dry_run_changes_nothing(home, monkeypatch):
+    put(src(home) / "a.md", "# a\n")
+    for k in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.delenv(k)
+    scan()
+    state_before = sorted(os.listdir(home / ".state")) if (home / ".state").exists() else []
+    arch_before = git(arch(home), "status", "--porcelain")
+    out = repair.run(engine.Library(), dry_run=True)
+    assert out["skipped"] is False and out["fixed"] == []
+    assert any(i["kind"] == "uncommitted" for i in out["remaining"])
+    assert (sorted(os.listdir(home / ".state")) if (home / ".state").exists() else []) == state_before
+    assert git(arch(home), "status", "--porcelain") == arch_before
+    assert not (home / ".state" / "repair-state.json").exists()
+
+
+def test_settings_parse(home):
+    assert cfgmod.parse_value("auto_repair", "off") is False
+    assert cfgmod.parse_value("auto_repair", "on") is True
+    p = home / ".config" / "lasting-plans" / "config.json"
+    p.parent.mkdir(parents=True)
+    p.write_text(json.dumps({"alert_after_hours": 0}))
+    with pytest.raises(cfgmod.ConfigError):
+        cfgmod.load()

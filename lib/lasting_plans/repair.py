@@ -4,12 +4,17 @@ overwritten is first copied to the backup dir) and converges when re-run.
 
 `collect_issues(lib, res)` — res is a ScanResult or None (then engine.last_run()).
 `FIXERS[kind](lib, issue, backup_dir) -> (fixed: bool, note: str)`.
+`run(lib, res, dry_run)` — one pass under engine.scan_lock(); Busy ⇒ skipped.
+Ledger `<state_dir>/repair-state.json` decides when the banner may speak (alerts()).
 """
+import datetime
+import json
 import os
 import shutil
+import time
 
 from . import config as cfgmod
-from . import engine, gitrepo, migrate, remote, scheduler, tools
+from . import engine, gitrepo, metadata, migrate, remote, scheduler, tools
 
 
 def _last_commit_with(root, rel):
@@ -267,3 +272,149 @@ FIXERS = {
     "transient": _fix_transient,
     "emergency": _fix_emergency,
 }
+
+FIXER_ORDER = ["migration_pending", "sidecar_corrupt", "no_identity", "archive_missing",
+               "uncommitted", "type_mismatch", "empty_folder", "watcher_down"]
+
+
+# ------------------------------------------------------------------ ledger & journal
+
+def _ledger_path():
+    return os.path.join(cfgmod.state_dir(), "repair-state.json")
+
+
+def _journal_path():
+    return os.path.join(cfgmod.state_dir(), "repairs.jsonl")
+
+
+def _load_ledger():
+    try:
+        with open(_ledger_path(), encoding="utf-8") as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            return d
+    except (OSError, ValueError):
+        pass
+    # corrupt or unreadable ledger: back it up, start fresh (never silently lose the alarm state silently)
+    try:
+        shutil.copy2(_ledger_path(), _ledger_path() + ".bak-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+    except OSError:
+        pass
+    return {}
+
+
+def _save_ledger(led):
+    cfgmod.atomic_write(_ledger_path(), json.dumps(led, indent=2, sort_keys=True) + "\n")
+
+
+def _journal(entry):
+    os.makedirs(cfgmod.state_dir(), exist_ok=True)
+    with open(_journal_path(), "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, sort_keys=True) + "\n")
+
+
+def _record(issue, ok, note):
+    led = _load_ledger()
+    now = engine.now_utc()
+    if ok:
+        led.pop(issue["key"], None)
+        _journal({"utc": now, "key": issue["key"], "event": "fixed", "note": note})
+    else:
+        e = led.get(issue["key"]) or {"kind": issue["kind"], "path": issue["path"], "detail": issue["detail"],
+                                      "severity": issue["severity"], "first_seen_utc": now, "attempts": 0,
+                                      "last_attempt_utc": None}
+        e["attempts"] = e.get("attempts", 0) + 1
+        e["last_attempt_utc"] = now
+        led[issue["key"]] = e
+    _save_ledger(led)
+
+
+def alerts(now=None):
+    """Issues the banner may speak about: emergencies immediately, routines only after
+    alert_min_attempts attempts AND alert_after_hours of age."""
+    now = now if now is not None else time.time()
+    cfg = cfgmod.load()
+    out = []
+    for key, e in _load_ledger().items():
+        first = metadata.parse_iso(e.get("first_seen_utc") or "")
+        age_h = (now - first) / 3600 if first else 0.0
+        if e.get("severity") == "emergency" or (
+                e.get("attempts", 0) >= cfg.get("alert_min_attempts", 3) and age_h >= cfg.get("alert_after_hours", 24)):
+            out.append({"key": key, "kind": e.get("kind"), "path": e.get("path"), "severity": e.get("severity"),
+                        "first_seen_utc": e.get("first_seen_utc"), "attempts": e.get("attempts", 0)})
+    return out
+
+
+def recent_fixes(days=7):
+    """Fix journal entries from the last `days` days."""
+    now = time.time()
+    out = []
+    try:
+        with open(_journal_path(), encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                ts = metadata.parse_iso(e.get("utc") or "")
+                if ts and now - ts <= days * 86400:
+                    out.append(e)
+    except OSError:
+        pass
+    return out
+
+
+# ------------------------------------------------------------------ the pass
+
+def run(lib, res=None, dry_run=False):
+    """One repair pass. Under engine.scan_lock(); Busy ⇒ {'skipped': True}, ledger untouched.
+    Anything fixed ⇒ one more (lock-free) scan and re-collect, so one pass converges."""
+    try:
+        with engine.scan_lock():
+            return _run_locked(lib, res, dry_run)
+    except engine.Busy:
+        return {"fixed": [], "remaining": [], "skipped": True}
+
+
+def _run_locked(lib, res, dry_run):
+    fixed, remaining = [], []
+    done = set()
+    for _round in range(3):
+        issues = collect_issues(lib, res)
+        did_fix = False
+        for kind in FIXER_ORDER:
+            for issue in [i for i in issues if i["kind"] == kind and i["key"] not in done]:
+                if dry_run:
+                    remaining.append(issue)
+                    continue
+                backup = os.path.join(cfgmod.state_dir(), "repair-backups",
+                                      datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+                                      issue["key"].replace("/", "_")[:80])
+                os.makedirs(backup, exist_ok=True)
+                try:
+                    ok, note = FIXERS[issue["kind"]](lib, issue, backup)
+                except Exception as e:                      # a fixer must never kill the pass
+                    ok, note = False, "fixer raised: %s" % e
+                _record(issue, ok, note)
+                if ok:
+                    fixed.append(issue)
+                    done.add(issue["key"])
+                    did_fix = True
+                else:
+                    remaining.append(issue)
+        if dry_run or not did_fix:
+            break
+        res = engine._scan_locked(lib)                      # lock-free inner scan, we hold the lock
+    if not dry_run:
+        # issues that vanished on their own are journaled 'resolved' and leave the ledger
+        led = _load_ledger()
+        current = {i["key"] for i in collect_issues(lib, res)}
+        for key in list(led):
+            if key not in current:
+                _journal({"utc": engine.now_utc(), "key": key, "event": "resolved", "note": ""})
+                del led[key]
+        _save_ledger(led)
+    return {"fixed": fixed, "remaining": remaining, "skipped": False}

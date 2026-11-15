@@ -324,15 +324,20 @@ def _commit_renamed(lib, old_rel, new_rel, doc_id, message, res, pending_rel):
 def scan(lib=None):
     """One reconciliation pass. Idempotent: a second run with no changes does nothing."""
     lib = lib or Library()
-    res = ScanResult()
     with scan_lock():
-        prepare_roots(lib)
-        lib.reload()
-        _scan_source(lib, res)
-        lib.reload()
-        _scan_archive_edits(lib, res)
-        _sync_folder_tags(lib, res)
-        _retry_uncommitted(lib, res)
+        return _scan_locked(lib)
+
+
+def _scan_locked(lib):
+    """scan() without acquiring the lock — for callers already holding scan_lock()."""
+    res = ScanResult()
+    prepare_roots(lib)
+    lib.reload()
+    _scan_source(lib, res)
+    lib.reload()
+    _scan_archive_edits(lib, res)
+    _sync_folder_tags(lib, res)
+    _retry_uncommitted(lib, res)
     _write_last_run(res)
     return res
 
