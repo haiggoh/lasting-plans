@@ -51,6 +51,13 @@ don't dump the whole library into context.
 | Save/search/manage searches | `lasting-plans search-save/run/list/rm` |
 | Find duplicate documents | `lasting-plans duplicates [--threshold N] [--exact-only]` |
 | Backup to local destination | `lasting-plans backup <path> [--kind plan|playbook]` |
+| Mark a plan completed | `lasting-plans complete <ref> [--dry-run]` (sets `**Status:** completed`, moves it to `_ARCHIVED/`) |
+| Repair now / preview | `lasting-plans repair [--dry-run] [--json]` |
+| Behaviour settings (opt-outs) | `lasting-plans behaviour` in the menu, or `settings set auto_repair off` etc. |
+
+When you finish executing any plan, run `lasting-plans complete <plan>`; when you start one, set its
+`**Status:**` line to `in-progress`. Background repair runs on every watcher/hook pass; the banner
+speaks only when auto-repair could not fix something (or for an emergency).
 
 Add `--json` for machine-readable output. Exit codes: 3 = no match, 4 = ambiguous
 reference (it lists the candidates, so ask which one or narrow the query), 5 = something is

@@ -380,7 +380,11 @@ def run(lib, res=None, dry_run=False):
 
 
 def _run_locked(lib, res, dry_run):
-    fixed, remaining = [], []
+    from . import sorting
+    fixed, remaining, sorted_events = [], [], []
+    if not dry_run:
+        for _k, rel, detail in sorting.canonicalize_folders(lib):   # runs first in every pass
+            sorted_events.append(("recased", rel, detail))
     done = set()
     for _round in range(3):
         issues = collect_issues(lib, res)
@@ -405,6 +409,12 @@ def _run_locked(lib, res, dry_run):
                     did_fix = True
                 else:
                     remaining.append(issue)
+        if not dry_run and lib.cfg.get("auto_sort", True):
+            for ev in sorting.sort_pass(lib, time.time()):
+                sorted_events.append(ev)
+            if sorted_events:
+                res = engine._scan_locked(lib)              # the backup follows each sort move
+                did_fix = True
         if dry_run or not did_fix:
             break
         res = engine._scan_locked(lib)                      # lock-free inner scan, we hold the lock
@@ -417,4 +427,4 @@ def _run_locked(lib, res, dry_run):
                 _journal({"utc": engine.now_utc(), "key": key, "event": "resolved", "note": ""})
                 del led[key]
         _save_ledger(led)
-    return {"fixed": fixed, "remaining": remaining, "skipped": False}
+    return {"fixed": fixed, "remaining": remaining, "skipped": False, "sorted": sorted_events}

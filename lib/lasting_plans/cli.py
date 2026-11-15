@@ -7,6 +7,7 @@ import json
 import os
 import shlex
 import sys
+import time
 
 from . import PREFIX, __version__
 from . import config as cfgmod
@@ -522,6 +523,27 @@ def cmd_setup(args):
     return rc
 
 
+def cmd_complete(args):
+    """Mark a plan completed: sets **Status:** and moves it to _ARCHIVED/ now."""
+    from . import sorting
+    lib = engine.Library()
+    if args.dry_run:
+        d = _one(lib, args.ref)
+        text = open(d.path, encoding="utf-8", errors="replace").read() if os.path.exists(d.path) else ""
+        ok, reason = sorting.is_complete(lib, d, text, time.time())
+        out(args, "%s: %s — would move to %s now (%s)" % (PREFIX, args.ref, lib.cfg.get("archive_subdir"), reason or "explicit"),
+            {"ref": args.ref, "would_move": True})
+        return 0
+    try:
+        new_rel = sorting.complete(lib, args.ref)
+    except LookupError as e:
+        print("%s: %s" % (PREFIX, e), file=sys.stderr)
+        return 3
+    out(args, "%s: %s completed — moved to %s" % (PREFIX, args.ref, new_rel),
+        {"ref": args.ref, "new_relpath": new_rel})
+    return 0
+
+
 def cmd_import(args):
     """Import a document from archive to source folder (reverse import)."""
     lib = engine.Library()
@@ -928,6 +950,9 @@ def build_parser():
     s.add_argument("url", nargs="?", help="Git URL (set/clone) or OWNER/NAME (create-github)")
     s.add_argument("--verify", action="store_true", help="status: read the remote's tip now (network)")
     s.add_argument("--confirm-private", action="store_true", help="accept a non-GitHub URL whose privacy cannot be checked")
+    s = add("complete", cmd_complete, "mark a plan completed (sets **Status:** and moves it to _ARCHIVED/ now)")
+    s.add_argument("ref", help="document id, prefix, or path")
+    s.add_argument("--dry-run", action="store_true", help="show what would happen")
     s = add("import", cmd_import, "opt-in copy from archive to source folder (reverse import)")
     s.add_argument("ref", help="document id, prefix, or path fragment")
     s.add_argument("--force-playbook", action="store_true", help="allow importing playbooks (default: plans only)")

@@ -53,6 +53,17 @@ None of these? The base plan is enough; do not add this layer for ceremony.
 8. **Final delivery questions.** What is implemented versus only planned? Which receipts actually
    ran? Is user work preserved? Did the run stop at its authority boundary? State blockers plainly.
 
+## Canonical completion signal (owned by lasting-plans 2.0.0)
+
+Every plan this layer hardens MUST carry, in its first 40 lines, both:
+
+- a line `**Status:** draft | approved | in-progress | completed` (start at `draft`/`in-progress`)
+- a blockquote line `> **Lasting Plans:** when every task below is done, set the Status line to
+  `completed` by running `lasting-plans complete "<this file>"` as the closing step.`
+
+and its closing/receipt section ends with `lasting-plans complete "<plan path>"`. The executor runs
+that command as its closing step; the signal is in-file, never a naming scheme.
+
 ## Writing for the executor
 
 Execution method is NATIVE by standing user decision (2026-11-05): the plan header names

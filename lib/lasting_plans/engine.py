@@ -370,7 +370,12 @@ def _scan_source(lib, res):
                 continue
         if doc is None and orphans.get(h):
             doc = orphans[h].pop(0)
-            _handle_move(lib, doc, rel, abspath, taken, res)
+            _handle_move(lib, doc, rel, abspath, data, h, taken, res)
+            continue
+        if doc is not None and doc.sc["archive_relpath"] != rel and os.path.exists(doc.path):
+            # one-mirror invariant: the archive path always equals the source path
+            # (sorting/rescue moved the source; the sidecar already knows the new path)
+            _handle_move(lib, doc, rel, abspath, data, h, taken, res)
             continue
         if doc is None:
             _handle_new(lib, rel, abspath, data, h, taken, res)
@@ -429,9 +434,10 @@ def _handle_case_rename(lib, doc, rel, abspath, data, h, taken, res):
     old_src = sc.get("source_relpath")
     old_arel = sc["archive_relpath"]
     sc["source_relpath"] = rel
-    sc.setdefault("source_history", []).append(rel)
+    if rel not in sc.get("source_history", []):
+        sc.setdefault("source_history", []).append(rel)
     moved = False
-    if old_arel == old_src and os.path.exists(doc.path):
+    if old_arel != rel and os.path.exists(doc.path):
         taken.discard(old_arel)
         new_arel = _free_relpath(lib.root, rel, taken, ignore=old_arel)
         gitrepo.move_path(lib.root, old_arel, new_arel)
@@ -453,14 +459,18 @@ def _handle_case_rename(lib, doc, rel, abspath, data, h, taken, res):
         _handle_update(lib, doc, rel, abspath, data, h, taken, res)
 
 
-def _handle_move(lib, doc, rel, abspath, taken, res):
+def _handle_move(lib, doc, rel, abspath, data, h, taken, res):
+    """The source file moved (or the sidecar already knows the new path): relocate
+    the archive file to the source path so the mirror holds, then continue the
+    normal hash comparison for this document."""
     sc = doc.sc
     old_src = sc.get("source_relpath")
     sc["source_relpath"] = rel
-    sc.setdefault("source_history", []).append(rel)
+    if rel not in sc.get("source_history", []):
+        sc.setdefault("source_history", []).append(rel)
     old_arel = sc["archive_relpath"]
     moved = False
-    if old_arel == old_src and os.path.exists(doc.path):
+    if old_arel != rel and os.path.exists(doc.path):
         taken.discard(old_arel)
         new_arel = _free_relpath(lib.root, rel, taken, ignore=old_arel)
         gitrepo.move_path(lib.root, old_arel, new_arel)
@@ -476,7 +486,10 @@ def _handle_move(lib, doc, rel, abspath, taken, res):
     if sha is None and any(p[0] == rel for p in res.pending):
         return
     res.add("moved", sc["id"], sc["archive_relpath"], "source %s -> %s%s" % (old_src, rel, "" if moved else " (archive path kept)"))
-    _handle_metadata_only(lib, doc, abspath, res)
+    if h == sc.get("last_import_sha256"):
+        _handle_metadata_only(lib, doc, abspath, res)
+    else:
+        _handle_update(lib, doc, rel, abspath, data, h, taken, res)
 
 
 def _handle_update(lib, doc, rel, abspath, data, h, taken, res):
