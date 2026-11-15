@@ -53,8 +53,70 @@ def has_identity(root):
     return bool(name and mail)
 
 
+def index_case(root, paths):
+    """Rewrite each path to the spelling Git's index uses for it, else the
+    on-disk spelling (per-component casefold match), else unchanged.
+
+    Git pathspecs match the index case-sensitively even on a case-insensitive
+    volume, so a wrong-case path silently stages nothing — map every path the
+    caller got from a scan or a user through this first.
+    """
+    try:
+        idx = [e for e in git(root, "ls-files", "-z").stdout.split("\0") if e]
+    except GitError:
+        idx = []
+    out = []
+    for path in paths:
+        if not path:
+            out.append(path)
+            continue
+        fold = [e for e in idx if e.casefold() == path.casefold()]
+        if fold:
+            out.append(fold[0])
+            continue
+        fixed, cur = [], root
+        for comp in path.split("/"):
+            try:
+                entries = os.listdir(cur)
+            except OSError:
+                entries = []
+            m = [e for e in entries if e.casefold() == comp.casefold()]
+            chosen = m[0] if m else comp
+            fixed.append(chosen)
+            cur = os.path.join(cur, chosen)
+        out.append("/".join(fixed))
+    return out
+
+
+def move_path(root, old, new):
+    """`git mv` old -> new, via `<new>.lp-case-tmp` when only the case differs
+    (a plain mv refuses the destination on a case-insensitive volume). Creates
+    parent directories, re-cases a parent folder that is physically the same
+    directory, and prunes the now-empty parent directories of `old` up to root."""
+    new_abs = os.path.join(root, new)
+    os.makedirs(os.path.dirname(new_abs) or root, exist_ok=True)
+    if old.casefold() == new.casefold():
+        tmp = new + ".lp-case-tmp"
+        git(root, "mv", "--", old, tmp)
+        git(root, "mv", "--", tmp, new)
+    else:
+        git(root, "mv", "--", old, new)
+    old_parent, new_parent = os.path.dirname(old), os.path.dirname(new)
+    if (old_parent and old_parent != new_parent
+            and old_parent.casefold() == new_parent.casefold()):
+        src_dir, dst_dir = os.path.join(root, old_parent), os.path.join(root, new_parent)
+        if os.path.isdir(src_dir) and os.path.isdir(dst_dir) and os.path.samefile(src_dir, dst_dir):
+            os.rename(src_dir, dst_dir)
+    d = os.path.dirname(os.path.join(root, old))
+    stop = os.path.realpath(root)
+    while d and os.path.isdir(d) and os.path.realpath(d) != stop and not os.listdir(d):
+        os.rmdir(d)
+        d = os.path.dirname(d)
+
+
 def commit_paths(root, paths, message):
     """Stage exactly `paths` (additions, edits or removals) and commit only them. Returns the SHA."""
+    paths = index_case(root, list(paths))
     git(root, "add", "-A", "--", *paths)
     staged = git(root, "diff", "--cached", "--name-only", "-z", "--", *paths).stdout
     if not staged.strip("\0"):
