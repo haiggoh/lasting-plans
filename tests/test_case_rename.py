@@ -4,6 +4,7 @@ The live bug this file pins: a folder renamed case-only (`_PLAYBOOKS` <-> `_play
 left Git commits failing with "pathspec … did not match" and the engine writing
 `X (2).md` copies instead of clean renames.
 """
+import json
 import os
 import subprocess
 import sys
@@ -13,21 +14,48 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "lib"))
 
-from lasting_plans import gitrepo  # noqa: E402
+from lasting_plans import engine, gitrepo, metadata  # noqa: E402
+from lasting_plans import config as cfgmod  # noqa: E402
 
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     h = tmp_path / "home"
-    h.mkdir()
+    (h / ".claude" / "plans").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(h))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setenv("LASTING_PLANS_CONFIG_DIR", str(h / ".config" / "lasting-plans"))
     monkeypatch.setenv("LASTING_PLANS_STATE_DIR", str(h / ".state"))
+    monkeypatch.setenv("LASTING_PLANS_SETTLE_SECONDS", "0")
     for k, v in {"GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "f@example.invalid",
                  "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "f@example.invalid",
                  "GIT_CONFIG_GLOBAL": str(tmp_path / "gitconfig"), "GIT_CONFIG_NOSYSTEM": "1"}.items():
         monkeypatch.setenv(k, v)
     return h
+
+
+def src(home):
+    return home / ".claude" / "plans"
+
+
+def put(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def scan():
+    return engine.scan(engine.Library())
+
+
+def kinds(res):
+    return sorted(e[0] for e in res.events)
+
+
+def git(root, *a):
+    r = subprocess.run(["git", "-C", str(root)] + list(a), capture_output=True, text=True)
+    assert r.returncode == 0, "git %s failed: %s" % (" ".join(a), r.stderr)
+    return r.stdout
 
 
 def fs_is_case_sensitive(root):
@@ -87,3 +115,119 @@ def test_move_path_case_only(repo):
     # git mv stages the rename pair; committing it is the caller's step
     # (the engine commits with `commit --only -- <old> <new>`, Task 2)
     assert _git(repo, "status", "--porcelain").strip() == "R  _playbooks/A.md -> _PLAYBOOKS/A.md"
+
+
+# ------------------------------------------------------------------ 2.0.0 Task 2: one archive
+
+def test_playbook_archived_at_source_path(home):
+    """A playbook mirrors to its source path in the ONE archive; type is a label."""
+    put(src(home) / "_PLAYBOOKS" / "P.md", "# Team Handbook\n")
+    res = scan()
+    assert kinds(res) == ["imported"]
+    assert (home / "Claude-plans" / "_PLAYBOOKS" / "P.md").read_text(encoding="utf-8") == "# Team Handbook\n"
+    doc = engine.Library().docs[0]
+    assert doc.type == "playbook"
+    assert doc.sc["archive_relpath"] == "_PLAYBOOKS/P.md"
+    assert doc.sc["source_relpath"] == "_PLAYBOOKS/P.md"
+    assert doc.root == engine.Library().root
+
+
+def test_case_only_folder_rename_is_a_clean_move(home):
+    """Renaming the source folder case-only is one clean rename in the archive — never a copy."""
+    put(src(home) / "_playbooks" / "P.md", "# Handbook\n")
+    scan()
+    os.rename(src(home) / "_playbooks", src(home) / "_PLAYBOOKS")
+    res = scan()
+    assert res.pending == [] and res.errors == []
+    assert kinds(res) == ["moved"]
+    arch = home / "Claude-plans"
+    tracked = [f for f in git(arch, "ls-files").splitlines() if not f.startswith(".lasting-plans")]
+    assert tracked == ["_PLAYBOOKS/P.md"]
+    assert git(arch, "status", "--porcelain") == ""
+    assert not [f for f in os.listdir(arch / "_PLAYBOOKS") if "(2)" in f]
+    entries = os.listdir(arch)
+    assert "_PLAYBOOKS" in entries and "_playbooks" not in entries  # stored case, not just existence
+
+
+def test_case_rename_with_content_change(home):
+    """A case-only rename that also changes content: move + update, no '(2)' copy."""
+    put(src(home) / "_playbooks" / "P.md", "# Handbook\nv1\n")
+    scan()
+    os.rename(src(home) / "_playbooks", src(home) / "_PLAYBOOKS")
+    put(src(home) / "_PLAYBOOKS" / "P.md", "# Handbook\nv2\n")
+    res = scan()
+    assert res.pending == [] and res.errors == []
+    assert kinds(res) == ["moved", "updated"]
+    arch = home / "Claude-plans"
+    assert (arch / "_PLAYBOOKS" / "P.md").read_text(encoding="utf-8").endswith("v2\n")
+    assert not [f for f in os.listdir(arch / "_PLAYBOOKS") if "(2)" in f]
+    assert git(arch, "status", "--porcelain") == ""
+
+
+def test_move_prunes_empty_folder(home):
+    """A source move prunes the emptied archive folder."""
+    p = put(src(home) / "old" / "a.md", "# a\n")
+    scan()
+    assert (home / "Claude-plans" / "old" / "a.md").exists()
+    (src(home) / "new").mkdir()
+    os.rename(p, src(home) / "new" / "a.md")
+    os.rmdir(src(home) / "old")
+    res = scan()
+    assert kinds(res) == ["moved"]
+    arch = home / "Claude-plans"
+    assert (arch / "new" / "a.md").exists()
+    assert not (arch / "old").exists()
+    assert git(arch, "status", "--porcelain") == ""
+
+
+def test_reclassify_is_label_only(home):
+    """reclassify changes the sidecar label only — the file never moves, one commit."""
+    put(src(home) / "x.md", "# Plan and playbook preservation\n")
+    scan()
+    lib = engine.Library()
+    d = lib.resolve("x.md")[0]
+    assert d.type == "plan"
+    sha = engine.reclassify(lib, d, "playbook")
+    assert sha
+    arch = home / "Claude-plans"
+    assert (arch / "x.md").exists()
+    lib = engine.Library()
+    d = lib.docs[0]
+    assert d.type == "playbook" and d.sc["archive_relpath"] == "x.md"
+    assert d.sc["type_reason"] == "reclassified by user"
+    subjects = [s for s in git(arch, "log", "--format=%s").splitlines() if s.startswith("reclassify")]
+    assert len(subjects) == 1
+    assert git(arch, "status", "--porcelain") == ""
+    assert scan().events == []
+    assert engine.type_mismatches(engine.Library()) == []  # a user reclassification is final
+
+
+@pytest.mark.skipif(not metadata.IS_MAC, reason="Finder tags are macOS only")
+def test_folder_tags_never_create_folders(home):
+    """A tag on a source folder with no archived documents never creates an archive folder."""
+    put(src(home) / "drafts" / "keep.md", "# a\n")
+    (src(home) / "empty-tagged").mkdir()
+    assert metadata.write_tags(str(src(home) / "drafts"), ["Rot\n6"])
+    assert metadata.write_tags(str(src(home) / "empty-tagged"), ["Blau\n4"])
+    scan()
+    arch = home / "Claude-plans"
+    assert not (arch / "empty-tagged").exists()
+    assert "empty-tagged" not in engine.load_folder_tags(str(arch))
+    assert "Rot\n6" in metadata.read_tags(str(arch / "drafts"))
+
+
+def test_legacy_config_keys_resolve(home):
+    """v1 config keys resolve to the 2.0.0 names at load time (read-compatible)."""
+    p = home / ".config" / "lasting-plans" / "config.json"
+    p.parent.mkdir(parents=True)
+    p.write_text(json.dumps({
+        "plans_root": "~/Custom-plans",
+        "playbooks_root": "~/Custom-playbooks",
+        "remotes": {"plan": "https://github.com/x/y.git"},
+    }), encoding="utf-8")
+    cfg = cfgmod.load()
+    assert cfg["archive_root"] == "~/Custom-plans"
+    assert cfg["retired_archives"] == ["~/Custom-playbooks"]
+    assert cfg["remote"] == "https://github.com/x/y.git"
+    assert cfg["layout"] == 1
+    assert cfgmod.archive_root(cfg).endswith("Custom-plans")

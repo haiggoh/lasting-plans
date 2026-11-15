@@ -102,7 +102,10 @@ def test_import_routes_and_commits(home):
     assert kinds(res) == ["imported"] * 3 and not res.pending
     assert (home / "Claude-plans" / "Plan A.md").read_text() == "# Plan A\n"
     assert (home / "Claude-plans" / "BU" / "old.md").exists()
-    assert (home / "Claude-playbooks" / "PLAYBOOK-x.md").exists()
+    # one archive: the playbook mirrors its source path, type is only a label
+    assert (home / "Claude-plans" / "PLAYBOOK-x.md").exists()
+    assert not (home / "Claude-playbooks").exists()
+    assert engine.Library().resolve("PLAYBOOK-x.md")[0].type == "playbook"
     assert git(home / "Claude-plans", "status", "--porcelain") == ""
     assert "import: Plan A.md" in git(home / "Claude-plans", "log", "--format=%s")
 
@@ -422,18 +425,19 @@ def test_1984_birthtime_sentinel_is_unknown(monkeypatch, tmp_path):
     assert not metadata.is_no_birthtime_sentinel(1759000000.0)
 
 
-def test_reclassify_moves_between_archives_and_doctor_reports(home):
+def test_reclassify_changes_only_the_label(home):
     put(src(home) / "x.md", "# Plan and playbook preservation\n")
     scan()
     lib = engine.Library()
     d = lib.resolve("x.md")[0]
     assert d.type == "plan"
-    rel, a, b = engine.reclassify(lib, d, "playbook")
-    assert a and b
-    assert (home / "Claude-playbooks" / "x.md").exists() and not (home / "Claude-plans" / "x.md").exists()
+    sha = engine.reclassify(lib, d, "playbook")
+    assert sha
+    assert (home / "Claude-plans" / "x.md").exists()   # the file never moves
     assert "reclassify" in git(home / "Claude-plans", "log", "-1", "--format=%s")
     lib = engine.Library()
     assert [x.type for x in lib.docs] == ["playbook"]
+    assert lib.docs[0].sc["archive_relpath"] == "x.md"
     assert not engine.type_mismatches(lib)  # a user reclassification is final
     assert scan().events == []              # the next scan neither re-imports nor moves it back
 
@@ -533,17 +537,17 @@ def test_remote_push_verifies_tip_and_tracks_pending(home, tmp_path):
     scan()
     lib = engine.Library()
     u = bare(tmp_path, "plans.git")
-    remote.configure(lib, "plan", u)
-    assert remote.summary(lib)["plan"]["state"] == "pending remote"   # configured is not pushed
+    remote.configure(lib, "plan", u)          # legacy kind argument: accepted, ignored
+    assert remote.summary(lib)["archive"]["state"] == "pending remote"   # configured is not pushed
     ok, detail = remote.push(lib, "plan")
     assert ok and "verified" in detail
     head = gitrepo_head(home / "Claude-plans")
     assert remote.remote_tip(str(home / "Claude-plans"), remote.branch(str(home / "Claude-plans"))) == head
-    assert remote.summary(lib, verify=True)["plan"]["state"] == "in sync"
-    assert remote.summary(lib)["playbook"]["state"] == "off"
+    assert remote.summary(lib, verify=True)["archive"]["state"] == "in sync"
+    assert list(remote.summary(lib)) == ["archive"]   # exactly one remote entry now
     put(src(home) / "b.md", "# b\n")
     scan()
-    s = remote.summary(engine.Library())["plan"]
+    s = remote.summary(engine.Library())["archive"]
     assert s["state"] == "pending remote" and s["unpushed_commits"] == 1
 
 
@@ -559,12 +563,12 @@ def test_auto_push_after_sync_and_manual_mode_does_not(home, tmp_path):
     run_cli(home, "settings", "set", "remote_push", "manual")
     r = run_cli(home, "sync")
     assert "remote" not in r.stdout
-    assert remote.summary(engine.Library())["plan"]["state"] == "pending remote"
+    assert remote.summary(engine.Library())["archive"]["state"] == "pending remote"
     run_cli(home, "settings", "set", "remote_push", "auto")
     put(src(home) / "b.md", "# b\n")
     r = run_cli(home, "sync")
-    assert r.returncode == 0 and "remote plan: remote verified" in r.stdout
-    assert remote.summary(engine.Library(), verify=True)["plan"]["state"] == "in sync"
+    assert r.returncode == 0 and "remote archive: remote verified" in r.stdout
+    assert remote.summary(engine.Library(), verify=True)["archive"]["state"] == "in sync"
     r = run_cli(home, "sync")                  # nothing new: no push attempted at all
     assert "remote" not in r.stdout
 
@@ -590,7 +594,7 @@ def test_rejected_push_is_pending_never_forced(home, tmp_path):
     ok, detail = remote.push(engine.Library(), "plan")
     assert not ok
     assert remote.remote_tip(str(home / "Claude-plans"), remote.branch(str(home / "Claude-plans"))) == foreign
-    assert remote.summary(engine.Library())["plan"]["state"] == "pending remote (last push failed)"
+    assert remote.summary(engine.Library())["archive"]["state"] == "pending remote (last push failed)"
     r = run_cli(home, "status")
     assert r.returncode == 5 and "remote push pending" in r.stdout
 
@@ -604,8 +608,8 @@ def test_offline_push_is_pending(home, tmp_path):
     import shutil as _sh
     _sh.rmtree(tmp_path / "gone.git")
     ok, _ = remote.push(lib, "plan")
-    assert not ok and remote.summary(engine.Library())["plan"]["state"].startswith("pending")
-    assert remote.summary(engine.Library(), verify=True)["plan"]["state"].startswith("unknown")
+    assert not ok and remote.summary(engine.Library())["archive"]["state"].startswith("pending")
+    assert remote.summary(engine.Library(), verify=True)["archive"]["state"].startswith("unknown")
 
 
 def test_public_remote_refused_and_unverified_needs_confirm(home, monkeypatch):
@@ -618,7 +622,7 @@ def test_public_remote_refused_and_unverified_needs_confirm(home, monkeypatch):
     monkeypatch.setattr(remote, "privacy", lambda u: ("unverified", "not a GitHub URL"))
     with pytest.raises(gitrepo.GitError, match="confirm-private"):
         remote.configure(lib, "plan", "https://git.example/y.git")
-    assert not engine.Library().cfg.get("remotes")
+    assert engine.Library().cfg.get("remote") is None
     assert run_cli(home, "settings", "set", "remotes", "{}").returncode == 2
 
 
@@ -642,7 +646,7 @@ def test_clone_on_fresh_home_restores_docs_and_dates(home, tmp_path, monkeypatch
     assert f.read_text().startswith("# a")
     assert metadata.utc_iso(os.stat(f).st_mtime) == want              # the clone's checkout time was replaced
     lib = engine.Library()
-    assert remote.summary(lib)["plan"]["state"] == "in sync"
+    assert remote.summary(lib)["archive"]["state"] == "in sync"
     assert scan(). events == [] or all(e[0] != "imported" for e in scan().events)
 
 
@@ -678,7 +682,7 @@ def test_push_that_exits_zero_but_tip_differs_is_not_backed_up(home, tmp_path, m
     monkeypatch.setattr(remote, "remote_tip", lambda root, br, timeout=30: "0" * 40)
     ok, detail = remote.push(lib, "plan")
     assert not ok and "remote reports" in detail
-    assert remote.summary(engine.Library())["plan"]["state"] != "in sync"
+    assert remote.summary(engine.Library())["archive"]["state"] != "in sync"
 
 
 @pytest.mark.skipif(not metadata.IS_MAC, reason="Finder tags are macOS only")

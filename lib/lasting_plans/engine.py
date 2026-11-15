@@ -1,8 +1,10 @@
 """The preservation engine. Every frontend (CLI, menu, watcher, hook) calls this.
 
-Archive layout, per root (plans / playbooks), each its own Git repo:
-    <root>/<source-relative path>           the document
-    <root>/.lasting-plans/docs/<id>.json    its sidecar (identity + metadata + provenance)
+Archive layout (2.0.0: ONE archive whose paths mirror the source layout):
+    <archive_root>/<source-relative path>     the document
+    <archive_root>/.lasting-plans/docs/<id>.json   its sidecar (identity + metadata + provenance)
+
+`type` ("plan" | "playbook") is a sidecar label only — it never decides a location.
 
 Invariants enforced here:
   * a source file disappearing never deletes, untracks or rewrites an archive document;
@@ -126,8 +128,11 @@ def write_sidecar(root, sc):
 # ---------------------------------------------------------------- library
 
 class Doc:
-    def __init__(self, root_type, root, sc):
-        self.type, self.root, self.sc = root_type, root, sc
+    def __init__(self, root, sc):
+        self.root = root
+        self.sc = sc
+        t = sc.get("type")
+        self.type = t if t in ("plan", "playbook") else "plan"
 
     @property
     def id(self):
@@ -151,16 +156,15 @@ class Library:
     def __init__(self, cfg=None):
         self.cfg = cfg or cfgmod.load()
         self.source = cfgmod.source_dir(self.cfg)
-        self.roots = cfgmod.roots(self.cfg)
+        self.root = cfgmod.archive_root(self.cfg)
         self.docs, self.corrupt = [], []
         self.reload()
 
     def reload(self):
         self.docs, self.corrupt = [], []
-        for t, r in self.roots.items():
-            scs, bad = load_sidecars(r)
-            self.docs += [Doc(t, r, sc) for sc in scs]
-            self.corrupt += bad
+        scs, bad = load_sidecars(self.root)
+        self.docs = [Doc(self.root, sc) for sc in scs]
+        self.corrupt = bad
 
     def by_source(self):
         return {d.sc.get("source_relpath"): d for d in self.docs if d.sc.get("source_relpath")}
@@ -198,14 +202,34 @@ class Busy(Exception):
     pass
 
 
-def _free_relpath(root, rel, taken):
-    if rel not in taken and not os.path.exists(os.path.join(root, rel)):
+def prepare_roots(lib):
+    st = gitrepo.ensure_repo(lib.root, "archive")
+    real = os.path.realpath(lib.root)
+    src = os.path.realpath(lib.source)
+    if real == src or real.startswith(src + os.sep) or src.startswith(real + os.sep):
+        raise gitrepo.GitError("archive root %s overlaps the swept source %s" % (lib.root, src))
+    return {"archive": st}
+
+
+def _free_relpath(root, rel, taken, ignore=None):
+    """`ignore` names a path being renamed away case-only: the same physical file
+    must not count as 'taken' (neither in `taken` nor via the disk check)."""
+    low = {t.casefold() for t in taken}
+
+    def free(cand):
+        if cand.casefold() in low:
+            return False
+        if ignore is not None and cand.casefold() == ignore.casefold():
+            return True
+        return not os.path.exists(os.path.join(root, cand))
+
+    if free(rel):
         return rel
     stem, ext = os.path.splitext(rel)
     n = 2
     while True:
         cand = "%s (%d)%s" % (stem, n, ext)
-        if cand not in taken and not os.path.exists(os.path.join(root, cand)):
+        if free(cand):
             return cand
         n += 1
 
@@ -269,20 +293,6 @@ class ScanResult:
         }
 
 
-def prepare_roots(lib):
-    out = {}
-    for t, r in lib.roots.items():
-        out[t] = gitrepo.ensure_repo(r, t)
-    real = [os.path.realpath(r) for r in lib.roots.values()]
-    src = os.path.realpath(lib.source)
-    for r in real:
-        if r == src or r.startswith(src + os.sep) or src.startswith(r + os.sep):
-            raise gitrepo.GitError("archive root %s overlaps the swept source %s" % (r, src))
-    if real[0] == real[1]:
-        raise gitrepo.GitError("plans_root and playbooks_root must differ")
-    return out
-
-
 def _commit(lib, doc_root, rel_doc, doc_id, message, res):
     paths = [rel_doc, sidecar_rel(doc_id)]
     if not gitrepo.has_identity(doc_root):
@@ -292,6 +302,35 @@ def _commit(lib, doc_root, rel_doc, doc_id, message, res):
         return gitrepo.commit_paths(doc_root, paths, message)
     except gitrepo.GitError as e:
         res.pending.append((rel_doc, "uncommitted: %s" % e))
+        return None
+
+
+def _commit_renamed(lib, old_rel, new_rel, doc_id, message, res, pending_rel):
+    """Commit a rename staged by `gitrepo.move_path`, together with the sidecar.
+    On a case-insensitive volume the old path still resolves in the working tree,
+    so no pathspec-based commit (`--only`) can record the staged deletion — only a
+    plain index commit does. Anything staged that is not one of our paths and not a
+    plugin-owned document/sidecar is unstaged first, so the user's staged work is
+    never swept into this commit."""
+    root = lib.root
+    if not gitrepo.has_identity(root):
+        res.pending.append((pending_rel, "uncommitted: no Git user.name/user.email configured"))
+        return None
+    try:
+        ours = {old_rel, new_rel, sidecar_rel(doc_id)}
+        allowed = ours | {d.sc["archive_relpath"] for d in lib.docs} | {sidecar_rel(d.id) for d in lib.docs}
+        staged = [p for p in gitrepo.git(root, "diff", "--cached", "--name-only", "-z").stdout.split("\0") if p]
+        for p in staged:
+            if p not in allowed:
+                gitrepo.git(root, "reset", "-q", "--", p)
+        # the rename pair is already staged by move_path's `git mv`; stage the
+        # sidecar too, then commit the index (pathspec commits cannot record a
+        # staged deletion on a case-insensitive volume)
+        gitrepo.git(root, "add", "-A", "--", new_rel, sidecar_rel(doc_id))
+        gitrepo.git(root, "commit", "-q", "-m", message)
+        return gitrepo.git(root, "rev-parse", "HEAD").stdout.strip()
+    except gitrepo.GitError as e:
+        res.pending.append((pending_rel, "uncommitted: %s" % e))
         return None
 
 
@@ -313,7 +352,10 @@ def scan(lib=None):
 
 def _scan_source(lib, res):
     by_src = lib.by_source()
-    taken = {t: {d.sc["archive_relpath"] for d in lib.docs if d.type == t} for t in lib.roots}
+    taken = {d.sc["archive_relpath"] for d in lib.docs}
+    casefold_src = {}
+    for k in by_src:
+        casefold_src.setdefault(k.casefold(), []).append(k)
     present = {rel for rel, _ in walk_docs(lib.source)}
     # docs whose source vanished, keyed by last import hash: candidates for a move/rename
     orphans = {}
@@ -329,9 +371,14 @@ def _scan_source(lib, res):
             continue
         h = sha256_bytes(data)
         doc = by_src.get(rel)
+        if doc is None:
+            cands = [k for k in casefold_src.get(rel.casefold(), []) if k != rel]
+            if cands:
+                _handle_case_rename(lib, by_src[cands[0]], rel, abspath, data, h, taken, res)
+                continue
         if doc is None and orphans.get(h):
             doc = orphans[h].pop(0)
-            _handle_move(lib, doc, rel, abspath, res)
+            _handle_move(lib, doc, rel, abspath, taken, res)
             continue
         if doc is None:
             _handle_new(lib, rel, abspath, data, h, taken, res)
@@ -362,9 +409,9 @@ def _new_sidecar(rel_src, rel_arch, h, kind, reason, origin="source"):
 def _handle_new(lib, rel, abspath, data, h, taken, res):
     text = data.decode("utf-8", "replace")
     kind, reason = classify_mod.classify(rel, text, lib.cfg.get("classify_overrides"))
-    root = lib.roots[kind]
-    arel = _free_relpath(root, rel, taken[kind])
-    taken[kind].add(arel)
+    root = lib.root
+    arel = _free_relpath(root, rel, taken)
+    taken.add(arel)
     sc = _new_sidecar(rel, arel, h, kind, reason)
     try:
         _atomic_copy_bytes(data, os.path.join(root, arel))
@@ -382,7 +429,39 @@ def _handle_new(lib, rel, abspath, data, h, taken, res):
         res.add("imported", sc["id"], arel, (kind + (", " + note if note else "")))
 
 
-def _handle_move(lib, doc, rel, abspath, res):
+def _handle_case_rename(lib, doc, rel, abspath, data, h, taken, res):
+    """The source file's path changed only in case (a folder or file rename on a
+    case-insensitive volume). One clean rename of the archive file — never a
+    '(2)' copy — then the normal hash comparison continues for this document."""
+    sc = doc.sc
+    old_src = sc.get("source_relpath")
+    old_arel = sc["archive_relpath"]
+    sc["source_relpath"] = rel
+    sc.setdefault("source_history", []).append(rel)
+    moved = False
+    if old_arel == old_src and os.path.exists(doc.path):
+        taken.discard(old_arel)
+        new_arel = _free_relpath(lib.root, rel, taken, ignore=old_arel)
+        gitrepo.move_path(lib.root, old_arel, new_arel)
+        sc["archive_relpath"] = new_arel
+        taken.add(new_arel)
+        moved = True
+    write_sidecar(lib.root, sc)
+    msg = "case-only rename: %s -> %s" % (old_src, rel)
+    if moved:
+        sha = _commit_renamed(lib, old_arel, sc["archive_relpath"], sc["id"], msg, res, rel)
+    else:
+        sha = _commit(lib, lib.root, sc["archive_relpath"], sc["id"], msg, res)
+    if sha is None and any(p[0] == rel for p in res.pending):
+        return
+    res.add("moved", sc["id"], sc["archive_relpath"], msg)
+    if h == sc.get("last_import_sha256"):
+        _handle_metadata_only(lib, doc, abspath, res)
+    else:
+        _handle_update(lib, doc, rel, abspath, data, h, taken, res)
+
+
+def _handle_move(lib, doc, rel, abspath, taken, res):
     sc = doc.sc
     old_src = sc.get("source_relpath")
     sc["source_relpath"] = rel
@@ -390,22 +469,19 @@ def _handle_move(lib, doc, rel, abspath, res):
     old_arel = sc["archive_relpath"]
     moved = False
     if old_arel == old_src and os.path.exists(doc.path):
-        new_arel = _free_relpath(doc.root, rel, {d.sc["archive_relpath"] for d in lib.docs if d.root == doc.root})
-        dest = os.path.join(doc.root, new_arel)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        os.rename(doc.path, dest)
+        taken.discard(old_arel)
+        new_arel = _free_relpath(lib.root, rel, taken, ignore=old_arel)
+        gitrepo.move_path(lib.root, old_arel, new_arel)
         sc["archive_relpath"] = new_arel
+        taken.add(new_arel)
         moved = True
-    write_sidecar(doc.root, sc)
-    paths = [old_arel, sc["archive_relpath"]]
-    if gitrepo.has_identity(doc.root):
-        try:
-            gitrepo.commit_paths(doc.root, paths + [sidecar_rel(sc["id"])], "move: %s -> %s" % (old_src, rel))
-        except gitrepo.GitError as e:
-            res.pending.append((rel, "uncommitted: %s" % e))
-            return
+    write_sidecar(lib.root, sc)
+    msg = "move: %s -> %s" % (old_src, rel)
+    if moved:
+        sha = _commit_renamed(lib, old_arel, sc["archive_relpath"], sc["id"], msg, res, rel)
     else:
-        res.pending.append((rel, "uncommitted: no Git identity"))
+        sha = _commit(lib, lib.root, sc["archive_relpath"], sc["id"], msg, res)
+    if sha is None and any(p[0] == rel for p in res.pending):
         return
     res.add("moved", sc["id"], sc["archive_relpath"], "source %s -> %s%s" % (old_src, rel, "" if moved else " (archive path kept)"))
     _handle_metadata_only(lib, doc, abspath, res)
@@ -421,8 +497,8 @@ def _handle_update(lib, doc, rel, abspath, data, h, taken, res):
         # the archive copy diverged from what we last imported (a hand edit, committed
         # or not): never overwrite it — keep both
         stem, ext = os.path.splitext(sc["archive_relpath"])
-        crel = _free_relpath(doc.root, "%s (source edit %s)%s" % (stem, time.strftime("%Y%m%d-%H%M%S"), ext), taken[doc.type])
-        taken[doc.type].add(crel)
+        crel = _free_relpath(doc.root, "%s (source edit %s)%s" % (stem, time.strftime("%Y%m%d-%H%M%S"), ext), taken)
+        taken.add(crel)
         csc = _new_sidecar(None, crel, h, doc.type, "conflict copy", origin="conflict")
         csc["conflict_of"] = sc["id"]
         _atomic_copy_bytes(data, os.path.join(doc.root, crel))
@@ -464,32 +540,32 @@ def _handle_metadata_only(lib, doc, abspath, res):
 
 
 def _scan_archive_edits(lib, res):
-    """Commit hand edits to archive copies, and adopt documents dropped into an archive root."""
-    for t, root in lib.roots.items():
-        known = {d.sc["archive_relpath"]: d for d in lib.docs if d.root == root}
-        for rel, abspath in walk_docs(root):
-            if rel.startswith(META_DIR + os.sep):
-                continue
-            doc = known.get(rel)
-            data = stable_read(abspath)
-            if data is None:
-                if doc is None or sha256_file(abspath) != doc.sc.get("archive_sha256"):
-                    res.pending.append((rel, "archive file is changing; will retry"))
-                continue
-            h = sha256_bytes(data)
-            if doc is None:
-                kind = t
-                sc = _new_sidecar(None, rel, h, kind, "dropped into %s archive" % kind, origin="archive")
-                _record_meta(sc, abspath)
-                write_sidecar(root, sc)
-                if _commit(lib, root, rel, sc["id"], "adopt: %s" % rel, res):
-                    res.add("adopted", sc["id"], rel, "file added directly to the archive")
-            elif h != doc.sc.get("archive_sha256"):
-                doc.sc["archive_sha256"] = h
-                doc.sc["modified_utc"] = metadata.utc_iso(os.stat(abspath).st_mtime)
-                write_sidecar(root, doc.sc)
-                if _commit(lib, root, rel, doc.id, "archive edit: %s" % rel, res):
-                    res.add("archive-edit", doc.id, rel)
+    """Commit hand edits to archive copies, and adopt documents dropped into the archive."""
+    root = lib.root
+    known = {d.sc["archive_relpath"]: d for d in lib.docs}
+    for rel, abspath in walk_docs(root):
+        if rel.startswith(META_DIR + os.sep):
+            continue
+        doc = known.get(rel)
+        data = stable_read(abspath)
+        if data is None:
+            if doc is None or sha256_file(abspath) != doc.sc.get("archive_sha256"):
+                res.pending.append((rel, "archive file is changing; will retry"))
+            continue
+        h = sha256_bytes(data)
+        if doc is None:
+            kind, _reason = classify_mod.classify(rel, data.decode("utf-8", "replace"), lib.cfg.get("classify_overrides"))
+            sc = _new_sidecar(None, rel, h, kind, "dropped into the archive", origin="archive")
+            _record_meta(sc, abspath)
+            write_sidecar(root, sc)
+            if _commit(lib, root, rel, sc["id"], "adopt: %s" % rel, res):
+                res.add("adopted", sc["id"], rel, "file added directly to the archive")
+        elif h != doc.sc.get("archive_sha256"):
+            doc.sc["archive_sha256"] = h
+            doc.sc["modified_utc"] = metadata.utc_iso(os.stat(abspath).st_mtime)
+            write_sidecar(root, doc.sc)
+            if _commit(lib, root, rel, doc.id, "archive edit: %s" % rel, res):
+                res.add("archive-edit", doc.id, rel)
 
 
 FOLDERS_REL = META_DIR + "/folders.json"
@@ -505,9 +581,10 @@ def load_folder_tags(root):
 
 
 def _sync_folder_tags(lib, res):
-    """Finder tags on SOURCE folders are mirrored onto the same folders in each archive
-    that has them, and recorded in <root>/.lasting-plans/folders.json so a clone can put
-    them back. Additive, like file tags: a tag is never removed from an archive folder."""
+    """Finder tags on SOURCE folders are mirrored onto the same folders in the archive,
+    and recorded in <root>/.lasting-plans/folders.json so a clone can put them back.
+    Additive, like file tags: a tag is never removed from an archive folder. Record
+    keys are casefold-deduped, keeping the source spelling; no folder is ever created."""
     if not metadata.IS_MAC:
         return
     src_tags = {}
@@ -519,30 +596,34 @@ def _sync_folder_tags(lib, res):
             t = metadata.read_tags(p)
             if t:
                 src_tags[os.path.relpath(p, src)] = t
-    for root in lib.roots.values():
-        rec = load_folder_tags(root)
-        changed = []
-        for rel, tags in sorted(src_tags.items()):
-            ap = os.path.join(root, rel)
-            if not os.path.isdir(ap) or os.path.islink(ap):
-                continue  # only folders that hold archived documents exist here
-            have = rec.get(rel, [])
-            want = have + [t for t in tags if t not in have]
-            if want != have:
-                rec[rel] = want
-                changed.append(rel)
-            if not metadata.write_tags(ap, rec[rel]):
-                res.pending.append((rel + "/", "could not apply folder tags"))
-        if changed:
-            cfgmod.atomic_write(os.path.join(root, FOLDERS_REL),
-                                json.dumps({"schema": 1, "tags": rec}, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
-            if gitrepo.has_identity(root):
-                try:
-                    gitrepo.commit_paths(root, [FOLDERS_REL], "metadata: folder tags on %s" % ", ".join(changed[:5]))
-                    for rel in changed:
-                        res.add("metadata", "-", rel + "/", "folder tags " + ", ".join(t.split("\n")[0] for t in rec[rel]))
-                except gitrepo.GitError as e:
-                    res.pending.append((FOLDERS_REL, "uncommitted: %s" % e))
+    root = lib.root
+    rec = {}
+    for k, v in load_folder_tags(root).items():
+        if not any(k.casefold() == x.casefold() for x in rec):
+            rec[k] = v
+    changed = []
+    for rel, tags in sorted(src_tags.items()):
+        key = next((k for k in rec if k.casefold() == rel.casefold()), rel)
+        ap = os.path.join(root, rel)
+        if not os.path.isdir(ap) or os.path.islink(ap):
+            continue  # only folders that hold archived documents exist here
+        have = rec.get(key, [])
+        want = have + [t for t in tags if t not in have]
+        if want != have:
+            rec[key] = want
+            changed.append(key)
+        if not metadata.write_tags(ap, rec[key]):
+            res.pending.append((rel + "/", "could not apply folder tags"))
+    if changed:
+        cfgmod.atomic_write(os.path.join(root, FOLDERS_REL),
+                            json.dumps({"schema": 1, "tags": rec}, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+        if gitrepo.has_identity(root):
+            try:
+                gitrepo.commit_paths(root, [FOLDERS_REL], "metadata: folder tags on %s" % ", ".join(changed[:5]))
+                for rel in changed:
+                    res.add("metadata", "-", rel + "/", "folder tags " + ", ".join(t.split("\n")[0] for t in rec[rel]))
+            except gitrepo.GitError as e:
+                res.pending.append((FOLDERS_REL, "uncommitted: %s" % e))
 
 
 def apply_folder_tags(root):
@@ -557,14 +638,11 @@ def apply_folder_tags(root):
 
 def _retry_uncommitted(lib, res):
     """A copy that landed while Git was unavailable is committed on the next pass."""
-    for root in lib.roots.values():
-        if not gitrepo.has_identity(root):
-            continue
+    root = lib.root
+    if gitrepo.has_identity(root):
         dirty = [p for code, p in gitrepo.status_z(root)]
         mine = {}
         for d in lib.docs:
-            if d.root != root:
-                continue
             for p in (d.sc["archive_relpath"], sidecar_rel(d.id)):
                 if p in dirty:
                     mine.setdefault(d.id, (d, [d.sc["archive_relpath"], sidecar_rel(d.id)]))
@@ -600,15 +678,14 @@ def status(lib):
     present = {rel for rel, _ in walk_docs(lib.source)}
     by_src = lib.by_source()
     unprotected = sorted(present - set(by_src))
-    counts = {t: sum(1 for d in lib.docs if d.type == t) for t in lib.roots}
+    counts = {}
+    for d in lib.docs:
+        counts[d.type] = counts.get(d.type, 0) + 1
     swept = sum(1 for d in lib.docs if d.sc.get("source_relpath") and d.sc["source_relpath"] not in present)
     missing_archive = [d.sc["archive_relpath"] for d in lib.docs if not os.path.exists(d.path)]
-    dirty = {}
-    for t, r in lib.roots.items():
-        if os.path.isdir(os.path.join(r, ".git")):
-            dirty[t] = len(gitrepo.status_z(r))
+    dirty = len(gitrepo.status_z(lib.root)) if os.path.isdir(os.path.join(lib.root, ".git")) else 0
     return {
-        "source": lib.source, "roots": lib.roots, "counts": counts,
+        "source": lib.source, "archive": lib.root, "counts": counts,
         "source_files": len(present), "unprotected": unprotected,
         "kept_after_source_gone": swept, "archive_missing": missing_archive,
         "uncommitted_paths": dirty, "corrupt_sidecars": [p for p, _ in lib.corrupt],
@@ -708,34 +785,25 @@ def type_mismatches(lib):
 
 
 def reclassify(lib, doc, new_type):
-    """Move one document (and its sidecar) to the other archive: an add commit in the
-    destination, then a removal commit in the origin. Returns (dest_rel, sha_add, sha_rm)."""
+    """Label-only type change (2.0.0: one archive — the file never moves). The sidecar's
+    type is rewritten, committed on its own, and a user reclassification is final
+    (`type_reason` marks it so `type_mismatches` stays quiet). Returns the commit sha."""
     if new_type == doc.type:
         raise ValueError("%s is already a %s" % (doc.sc["archive_relpath"], new_type))
-    for r in (doc.root, lib.roots[new_type]):
-        if not gitrepo.has_identity(r):
-            raise gitrepo.GitError("%s has no Git identity; nothing moved" % r)
+    if not gitrepo.has_identity(doc.root):
+        raise gitrepo.GitError("%s has no Git identity; type not changed" % doc.root)
+    old_type = doc.type
     with scan_lock():
-        src_root, dst_root = doc.root, lib.roots[new_type]
-        old_rel = doc.sc["archive_relpath"]
-        taken = {d.sc["archive_relpath"] for d in lib.docs if d.root == dst_root}
-        new_rel = _free_relpath(dst_root, old_rel, taken)
-        with open(doc.path, "rb") as f:
-            data = f.read()
-        _atomic_copy_bytes(data, os.path.join(dst_root, new_rel))
-        sc = dict(doc.sc)
-        sc.update(archive_relpath=new_rel, type=new_type, type_reason="reclassified by user")
-        sc.setdefault("type_history", []).append({"from": doc.type, "to": new_type, "at_utc": now_utc()})
-        write_sidecar(dst_root, sc)
-        _apply_sidecar_meta(os.path.join(dst_root, new_rel), sc)
-        sha_add = gitrepo.commit_paths(dst_root, [new_rel, sidecar_rel(sc["id"])],
-                                       "reclassify: %s (from %s archive)" % (new_rel, doc.type))
-        os.remove(doc.path)
-        os.remove(os.path.join(src_root, sidecar_rel(doc.id)))
-        sha_rm = gitrepo.commit_paths(src_root, [old_rel, sidecar_rel(doc.id)],
-                                      "reclassify: %s moved to the %s archive" % (old_rel, new_type))
+        sc = doc.sc
+        sc["type"] = new_type
+        sc["type_reason"] = "reclassified by user"
+        sc.setdefault("type_history", []).append({"from": old_type, "to": new_type, "at_utc": now_utc()})
+        write_sidecar(doc.root, sc)
+        sha = gitrepo.commit_paths(doc.root, [sidecar_rel(sc["id"])],
+                                   "reclassify: %s is now a %s" % (sc["archive_relpath"], new_type))
+        doc.type = new_type
     lib.reload()
-    return new_rel, sha_add, sha_rm
+    return sha
 
 
 def apply_metadata(doc):
@@ -864,11 +932,10 @@ def doctor(lib):
 
     add("git installed", tools.on_path("git") is not None)
     add("source folder exists", os.path.isdir(lib.source), lib.source)
-    for t, r in lib.roots.items():
-        is_repo = os.path.isdir(os.path.join(r, ".git"))
-        add("%s archive is a Git repo" % t, is_repo, r)
-        if is_repo:
-            add("%s archive has Git identity" % t, gitrepo.has_identity(r))
+    is_repo = os.path.isdir(os.path.join(lib.root, ".git"))
+    add("archive is a Git repo", is_repo, lib.root)
+    if is_repo:
+        add("archive has Git identity", gitrepo.has_identity(lib.root))
     add("sidecars parse", not lib.corrupt, "; ".join("%s: %s" % b for b in lib.corrupt)[:300])
     ids = [d.id for d in lib.docs]
     add("document ids unique", len(ids) == len(set(ids)))
@@ -944,8 +1011,8 @@ def migrate_existing_git_repo(lib, keep_existing=True):
         # Classify and import using existing scan logic
         text = data.decode("utf-8", "replace")
         kind, reason = classify_mod.classify(rel, text, lib.cfg.get("classify_overrides"))
-        root = lib.roots[kind]
-        taken = {d.sc["archive_relpath"] for d in lib.docs if d.root == root}
+        root = lib.root
+        taken = {d.sc["archive_relpath"] for d in lib.docs}
         arel = _free_relpath(root, rel, taken)
 
         # This mimics _handle_new but for migration
@@ -1059,9 +1126,9 @@ def privacy_secrets_audit(lib):
 # ---------------------------------------------------------------- backup destination
 
 def backup_to_destination(lib, destination, kind=None):
-    """Backup archive(s) to a local destination folder (external drive, etc.).
+    """Backup the archive to a local destination folder (external drive, etc.).
     This creates a mirror of the archive without using Git - just copies files and sidecars.
-    If kind is specified ('plan' or 'playbook'), only that archive is backed up.
+    `kind` ('plan'/'playbook') is accepted for compatibility and acts as a label filter.
     Returns (success_count, failed_items)."""
     import shutil
 
@@ -1071,34 +1138,25 @@ def backup_to_destination(lib, destination, kind=None):
         except OSError as e:
             return 0, [{"error": "cannot create destination: %s" % e}]
 
-    kinds = [kind] if kind in ("plan", "playbook") else list(lib.roots.keys())
     success = 0
     failed = []
-
-    for k in kinds:
-        root = lib.roots[k]
-        dest_kind = os.path.join(destination, k)
-        os.makedirs(dest_kind, exist_ok=True)
-
-        # Copy all documents
-        for d in lib.docs:
-            if d.type != k:
-                continue
-            if not os.path.exists(d.path):
-                failed.append({"id": d.id, "path": d.sc["archive_relpath"], "error": "source missing"})
-                continue
-            try:
-                dest_path = os.path.join(dest_kind, d.sc["archive_relpath"])
-                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-                shutil.copy2(d.path, dest_path)
-                # Also copy sidecar
-                sc_src = os.path.join(root, sidecar_rel(d.id))
-                sc_dest = os.path.join(dest_kind, sidecar_rel(d.id))
-                os.makedirs(os.path.dirname(sc_dest), exist_ok=True)
-                shutil.copy2(sc_src, sc_dest)
-                success += 1
-            except OSError as e:
-                failed.append({"id": d.id, "path": d.sc["archive_relpath"], "error": str(e)})
+    for d in lib.docs:
+        if kind in ("plan", "playbook") and d.type != kind:
+            continue
+        if not os.path.exists(d.path):
+            failed.append({"id": d.id, "path": d.sc["archive_relpath"], "error": "source missing"})
+            continue
+        try:
+            dest_path = os.path.join(destination, d.sc["archive_relpath"])
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            shutil.copy2(d.path, dest_path)
+            sc_src = os.path.join(lib.root, sidecar_rel(d.id))
+            sc_dest = os.path.join(destination, sidecar_rel(d.id))
+            os.makedirs(os.path.dirname(sc_dest), exist_ok=True)
+            shutil.copy2(sc_src, sc_dest)
+            success += 1
+        except OSError as e:
+            failed.append({"id": d.id, "path": d.sc["archive_relpath"], "error": str(e)})
 
     return success, failed
 

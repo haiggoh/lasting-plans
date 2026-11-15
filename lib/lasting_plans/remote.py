@@ -1,4 +1,4 @@
-"""Optional off-machine copy of each archive: a PRIVATE Git remote, per archive.
+"""Optional off-machine copy of THE archive: one PRIVATE Git remote (2.0.0: single archive).
 
 Local preservation never depends on this. States are kept apart on purpose:
   copied    the file is in the archive            (engine)
@@ -8,6 +8,7 @@ A push that was attempted, rejected, or made while offline is `pending remote`, 
 `backed up`. Nothing here force-pushes, and nothing configures a remote implicitly.
 
 The Git remote is named `lasting-plans`, so a remote the user added themselves is left alone.
+Legacy `plan`/`playbook` kind arguments are accepted and ignored (one archive now).
 """
 import datetime
 import json
@@ -72,8 +73,9 @@ def _record(kind, **kw):
 
 # ---------------------------------------------------------------- config
 
-def url(cfg, kind):
-    return (cfg.get("remotes") or {}).get(kind)
+def url(cfg, kind=None):
+    """The single remote URL. `kind` is a legacy v1 argument, ignored."""
+    return cfg.get("remote") or (cfg.get("remotes") or {}).get(kind or "plan")
 
 
 def branch(root):
@@ -98,33 +100,37 @@ def privacy(u):
     return ("private", "GitHub reports private") if r.stdout.strip() == "true" else ("public", "GitHub reports PUBLIC")
 
 
+KIND = "archive"  # the single state bucket (legacy per-archive keys folded in by load_state)
+
+
 def configure(lib, kind, u, confirm_private=False):
-    """Point an archive at a remote after a privacy check. Pushes nothing."""
+    """Point the archive at a remote after a privacy check. Pushes nothing. `kind` is legacy, ignored."""
     verdict, detail = privacy(u)
     if verdict == "public":
         raise gitrepo.GitError("refusing %s: %s. Plan archives go only to private remotes." % (u, detail))
     if verdict == "unverified" and not confirm_private:
         raise gitrepo.GitError("%s — re-run with --confirm-private if you know it is private" % detail)
-    root = lib.roots[kind]
+    root = lib.root
     have = _git(root, "remote", check=False).stdout.split()
     _git(root, "remote", "set-url" if REMOTE in have else "add", REMOTE, u)
     cfg = dict(lib.cfg)
-    cfg["remotes"] = dict(cfg.get("remotes") or {}, **{kind: u})
+    cfg["remote"] = u
     cfgmod.save(cfg)
     lib.cfg = cfg
-    _record(kind, url=_redact(u), privacy=verdict, privacy_detail=detail, privacy_checked_utc=_now())
+    _record(KIND, url=_redact(u), privacy=verdict, privacy_detail=detail, privacy_checked_utc=_now())
     return verdict, detail
 
 
-def disable(lib, kind):
-    root = lib.roots[kind]
+def disable(lib, kind=None):
+    root = lib.root
     if REMOTE in _git(root, "remote", check=False).stdout.split():
         _git(root, "remote", "remove", REMOTE)
     cfg = dict(lib.cfg)
-    cfg["remotes"] = {k: v for k, v in (cfg.get("remotes") or {}).items() if k != kind}
+    cfg["remote"] = None
     cfgmod.save(cfg)
     lib.cfg = cfg
     st = load_state()
+    st.pop(KIND, None)
     st.pop(kind, None)
     _save_state(st)
 
@@ -138,10 +144,10 @@ def remote_tip(root, br, timeout=30):
     return line.split()[0] if line else None
 
 
-def push(lib, kind):
-    """Push, then read the tip back. Returns (ok, detail). Never forces."""
-    root = lib.roots[kind]
-    if not url(lib.cfg, kind):
+def push(lib, kind=None):
+    """Push, then read the tip back. Returns (ok, detail). Never forces. `kind` is legacy, ignored."""
+    root = lib.root
+    if not url(lib.cfg):
         return False, "no remote configured"
     head = gitrepo.head(root)
     if not head:
@@ -151,68 +157,66 @@ def push(lib, kind):
         _git(root, "push", "--quiet", REMOTE, "HEAD:refs/heads/" + br, timeout=120)
         tip = remote_tip(root, br)
     except gitrepo.GitError as e:
-        _record(kind, last_error=str(e), last_error_utc=_now(), pending_since=load_state().get(kind, {}).get("pending_since") or _now())
+        _record(KIND, last_error=str(e), last_error_utc=_now(),
+                pending_since=load_state().get(KIND, {}).get("pending_since") or _now())
         return False, str(e)
     if tip != head:
         msg = "pushed, but the remote reports %s, not %s" % ((tip or "nothing")[:10], head[:10])
-        _record(kind, last_error=msg, last_error_utc=_now())
+        _record(KIND, last_error=msg, last_error_utc=_now())
         return False, msg
-    st = load_state().get(kind, {})
-    _record(kind, last_pushed_sha=head, pushed_utc=_now(), last_error=None, pending_since=None)
+    st = load_state().get(KIND, {})
+    _record(KIND, last_pushed_sha=head, pushed_utc=_now(), last_error=None, pending_since=None)
     return True, "remote verified at %s" % head[:10] + ("" if st.get("last_pushed_sha") != head else " (already there)")
 
 
 def auto_push(lib):
-    """After a scan: push every archive whose HEAD differs from the last VERIFIED push.
+    """After a scan: push the archive if its HEAD differs from the last VERIFIED push.
     Local check only, so an up-to-date archive costs no network. [(kind, ok, detail)]"""
     if lib.cfg.get("remote_push") != "auto":
         return []
-    out = []
-    st = load_state()
-    for kind, root in lib.roots.items():
-        if not url(lib.cfg, kind):
-            continue
-        head = gitrepo.head(root)
-        if head and head != st.get(kind, {}).get("last_pushed_sha"):
-            ok, detail = push(lib, kind)
-            out.append((kind, ok, detail))
-    return out
+    if not url(lib.cfg):
+        return []
+    head = gitrepo.head(lib.root)
+    st = load_state().get(KIND, {})
+    if head and head != st.get("last_pushed_sha"):
+        ok, detail = push(lib)
+        return [(KIND, ok, detail)]
+    return []
 
 
 def summary(lib, verify=False):
-    """Per-archive remote state. Without verify, reports only what was last READ BACK."""
+    """Remote state of THE archive. Without verify, reports only what was last READ BACK."""
     st = load_state()
     out = {}
-    for kind, root in lib.roots.items():
-        u = url(lib.cfg, kind)
-        if not u:
-            out[kind] = {"state": "off"}
-            continue
-        s = dict(st.get(kind, {}))
-        head = gitrepo.head(root)
-        s.update(url=_redact(u), mode=lib.cfg.get("remote_push", "manual"), local_head=head)
-        if verify:
-            try:
-                s["remote_tip"] = remote_tip(root, branch(root))
-                s["verified_utc"] = _now()
-            except gitrepo.GitError as e:
-                s["verify_error"] = str(e)
-        tip = s.get("remote_tip") if verify else s.get("last_pushed_sha")
-        if verify and s.get("verify_error"):
-            s["state"] = "unknown (remote unreachable)"
-        elif head is None:
-            s["state"] = "nothing to push"
-        elif tip == head:
-            s["state"] = "in sync"
-        elif s.get("last_error"):
-            s["state"] = "pending remote (last push failed)"
-        else:
-            s["state"] = "pending remote"
-        if head and tip and tip != head:
-            n = _git(root, "rev-list", "--count", "%s..HEAD" % tip, check=False).stdout.strip()
-            if n.isdigit():
-                s["unpushed_commits"] = int(n)
-        out[kind] = s
+    u = url(lib.cfg)
+    if not u:
+        out[KIND] = {"state": "off"}
+        return out
+    s = dict(st.get(KIND, {}))
+    head = gitrepo.head(lib.root)
+    s.update(url=_redact(u), mode=lib.cfg.get("remote_push", "manual"), local_head=head)
+    if verify:
+        try:
+            s["remote_tip"] = remote_tip(lib.root, branch(lib.root))
+            s["verified_utc"] = _now()
+        except gitrepo.GitError as e:
+            s["verify_error"] = str(e)
+    tip = s.get("remote_tip") if verify else s.get("last_pushed_sha")
+    if verify and s.get("verify_error"):
+        s["state"] = "unknown (remote unreachable)"
+    elif head is None:
+        s["state"] = "nothing to push"
+    elif tip == head:
+        s["state"] = "in sync"
+    elif s.get("last_error"):
+        s["state"] = "pending remote (last push failed)"
+    else:
+        s["state"] = "pending remote"
+    if head and tip and tip != head:
+        n = _git(lib.root, "rev-list", "--count", "%s..HEAD" % tip, check=False).stdout.strip()
+        if n.isdigit():
+            s["unpushed_commits"] = int(n)
+    out[KIND] = s
     return out
 
 
@@ -238,10 +242,10 @@ def create_github(owner, name):
 
 
 def clone(lib, kind, u, confirm_private=False):
-    """Recover an archive on a fresh machine: clone into an empty/missing root, remember
-    the remote, and re-apply every recorded date and tag to the files."""
+    """Recover the archive on a fresh machine: clone into an empty/missing root, remember
+    the remote, and re-apply every recorded date and tag to the files. `kind` is legacy, ignored."""
     from . import engine
-    root = lib.roots[kind]
+    root = lib.root
     if os.path.isdir(root) and os.listdir(root):
         raise gitrepo.GitError("%s is not empty; clone refuses to touch it" % root)
     verdict, detail = privacy(u)
@@ -255,18 +259,17 @@ def clone(lib, kind, u, confirm_private=False):
     if r.returncode != 0:
         raise gitrepo.GitError("clone failed: %s" % _redact(r.stderr.strip())[:300])
     cfg = dict(lib.cfg)
-    cfg["remotes"] = dict(cfg.get("remotes") or {}, **{kind: u})
+    cfg["remote"] = u
     cfgmod.save(cfg)
     lib.cfg = cfg
     lib.reload()
     unapplied = {}
     for d in lib.docs:
-        if d.root == root:
-            bad = engine.apply_metadata(d)
-            if bad:
-                unapplied[d.sc["archive_relpath"]] = bad
+        bad = engine.apply_metadata(d)
+        if bad:
+            unapplied[d.sc["archive_relpath"]] = bad
     for rel in engine.apply_folder_tags(root):
         unapplied[rel + "/"] = ["tags"]
     head = gitrepo.head(root)
-    _record(kind, url=_redact(u), privacy=verdict, last_pushed_sha=head, pushed_utc=_now(), last_error=None)
-    return sum(1 for d in lib.docs if d.root == root), unapplied
+    _record(KIND, url=_redact(u), privacy=verdict, last_pushed_sha=head, pushed_utc=_now(), last_error=None)
+    return len(lib.docs), unapplied

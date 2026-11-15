@@ -101,7 +101,7 @@ def run(once=False, max_seconds=None):
     cfg = cfgmod.load()
     interval = cfg["interval_seconds"]
     lib = engine.Library(cfg)
-    roots = [lib.source] + list(lib.roots.values())
+    roots = [lib.source, lib.root]
     _log("watching %s (+ archives), catch-up every %ds" % (lib.source, interval))
     _run_scan("start")
     if once:

@@ -10,19 +10,23 @@ import tempfile
 DEFAULTS = {
     "schema": 1,
     "source_dir": None,          # None = discover from CLAUDE_CONFIG_DIR / settings.json
-    "plans_root": "~/Claude-plans",
-    "playbooks_root": "~/Claude-playbooks",
+    "archive_root": "~/Claude-plans",   # THE archive; its paths mirror the source layout
+    "remote": None,              # single private Git URL or None (= local only)
+    "layout": 1,                 # 1 = v1 two-archive layout (migration pending), 2 = migrated
+    "retired_archives": [],      # v1 roots kept (moved/symlinked) by the migration, never read
     "scheduler_enabled": True,
     "interval_seconds": 900,
     "classify_overrides": {},    # source-relative path -> "plan" | "playbook"
-    "remotes": {},               # "plan" / "playbook" -> private Git URL; empty = local only
+    "remotes": {},               # legacy v1 container; `remotes.plan` resolves to `remote`
     "remote_push": "auto",       # "auto": push after each committing scan; "manual": only on `remote push`
     "saved_searches": {},        # name -> {query, regex, type, labels, history}
 }
 TYPES = {
     "source_dir": (str, type(None)),
-    "plans_root": str,
-    "playbooks_root": str,
+    "archive_root": str,
+    "remote": (str, type(None)),
+    "layout": int,
+    "retired_archives": list,
     "scheduler_enabled": bool,
     "interval_seconds": int,
     "classify_overrides": dict,
@@ -56,6 +60,7 @@ def load():
     """Defaults overlaid with the user file. Unknown keys are kept, never dropped."""
     cfg = dict(DEFAULTS)
     p = config_path()
+    user = {}
     if os.path.exists(p):
         try:
             with open(p, encoding="utf-8") as f:
@@ -65,6 +70,14 @@ def load():
         if not isinstance(user, dict):
             raise ConfigError("config %s is not a JSON object" % p)
         cfg.update(user)
+    # Legacy v1 keys resolve to the 2.0.0 names (read-compatible; the layout
+    # migration is what writes the new keys into the file).
+    if "archive_root" not in user and isinstance(user.get("plans_root"), str):
+        cfg["archive_root"] = user["plans_root"]
+    if "retired_archives" not in user and isinstance(user.get("playbooks_root"), str):
+        cfg["retired_archives"] = [user["playbooks_root"]]
+    if cfg.get("remote") is None and isinstance((cfg.get("remotes") or {}).get("plan"), str):
+        cfg["remote"] = cfg["remotes"]["plan"]
     for k, t in TYPES.items():
         if not isinstance(cfg.get(k), t):
             raise ConfigError("config key %r has wrong type %s" % (k, type(cfg.get(k)).__name__))
@@ -121,6 +134,21 @@ def parse_value(key, raw):
             raise ConfigError("expected an integer") from None
     if key == "source_dir":
         return None if raw in ("", "auto") else raw
+    if key == "remote":
+        return None if raw in ("", "none", "off") else raw
+    if key == "layout":
+        try:
+            return int(raw)
+        except ValueError:
+            raise ConfigError("expected an integer") from None
+    if key == "retired_archives":
+        try:
+            v = json.loads(raw)
+        except ValueError as e:
+            raise ConfigError("expected a JSON array: %s" % e) from e
+        if not isinstance(v, list):
+            raise ConfigError("expected a JSON array")
+        return v
     if key == "remotes":
         raise ConfigError("use `lasting-plans remote set plan|playbook URL` (it checks privacy first)")
     if key == "classify_overrides":
@@ -151,5 +179,6 @@ def source_dir(cfg):
     return os.path.join(expand(claude), "plans")
 
 
-def roots(cfg):
-    return {"plan": expand(cfg["plans_root"]), "playbook": expand(cfg["playbooks_root"])}
+def archive_root(cfg):
+    """THE one archive; every document sits at its source-relative path inside it."""
+    return expand(cfg["archive_root"])

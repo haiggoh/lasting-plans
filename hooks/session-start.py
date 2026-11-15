@@ -37,11 +37,11 @@ def main():
         lib = engine.Library(cfg)
         if not os.path.isdir(lib.source):
             return 0
-        first = not all(os.path.isdir(os.path.join(r, ".git")) for r in lib.roots.values())
+        first = not os.path.isdir(os.path.join(lib.root, ".git"))
         res = engine.scan(lib)
         if first:
-            notes.append("set up: plans are now kept in %s and %s (local Git, never deleted by Claude Code's cleanup)"
-                         % (cfg["plans_root"], cfg["playbooks_root"]))
+            notes.append("set up: plans are now kept in %s (local Git, never deleted by Claude Code's cleanup)"
+                         % cfg["archive_root"])
         if res.events and first:
             notes.append("imported %d document(s)" % len(res.events))
         if cfg["scheduler_enabled"] and scheduler.supported():
