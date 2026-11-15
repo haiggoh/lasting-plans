@@ -383,9 +383,10 @@ def _scan_source(lib, res):
             doc = orphans[h].pop(0)
             _handle_move(lib, doc, rel, abspath, data, h, taken, res)
             continue
-        if doc is not None and doc.sc["archive_relpath"] != rel and os.path.exists(doc.path):
-            # one-mirror invariant: the archive path always equals the source path
-            # (sorting/rescue moved the source; the sidecar already knows the new path)
+        expected_arel = archive_rel_for(lib.cfg, rel)
+        if doc is not None and doc.sc["archive_relpath"] != expected_arel and os.path.exists(doc.path):
+            # one-mirror invariant: the archive path always equals the MAPPED source
+            # path (the rescue subdir is stripped — the backup never mirrors it)
             _handle_move(lib, doc, rel, abspath, data, h, taken, res)
             continue
         if doc is None:
@@ -448,9 +449,10 @@ def _handle_case_rename(lib, doc, rel, abspath, data, h, taken, res):
     if rel not in sc.get("source_history", []):
         sc.setdefault("source_history", []).append(rel)
     moved = False
-    if old_arel != rel and os.path.exists(doc.path):
+    target_arel = archive_rel_for(lib.cfg, rel)
+    if old_arel != target_arel and os.path.exists(doc.path):
         taken.discard(old_arel)
-        new_arel = _free_relpath(lib.root, archive_rel_for(lib.cfg, rel), taken, ignore=old_arel)
+        new_arel = _free_relpath(lib.root, target_arel, taken, ignore=old_arel)
         gitrepo.move_path(lib.root, old_arel, new_arel)
         sc["archive_relpath"] = new_arel
         taken.add(new_arel)
@@ -481,9 +483,10 @@ def _handle_move(lib, doc, rel, abspath, data, h, taken, res):
         sc.setdefault("source_history", []).append(rel)
     old_arel = sc["archive_relpath"]
     moved = False
-    if old_arel != rel and os.path.exists(doc.path):
+    target_arel = archive_rel_for(lib.cfg, rel)
+    if old_arel != target_arel and os.path.exists(doc.path):
         taken.discard(old_arel)
-        new_arel = _free_relpath(lib.root, archive_rel_for(lib.cfg, rel), taken, ignore=old_arel)
+        new_arel = _free_relpath(lib.root, target_arel, taken, ignore=old_arel)
         gitrepo.move_path(lib.root, old_arel, new_arel)
         sc["archive_relpath"] = new_arel
         taken.add(new_arel)

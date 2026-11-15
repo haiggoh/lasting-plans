@@ -11,7 +11,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "lib"))
 
 from lasting_plans import config as cfgmod  # noqa: E402
-from lasting_plans import engine, repair  # noqa: E402
+from lasting_plans import engine, gitrepo, repair  # noqa: E402
 
 
 @pytest.fixture
@@ -587,3 +587,41 @@ def test_settings_show_uses_table_labels(home):
     r = run_cli(home, "settings", "show")
     assert r.returncode == 0
     assert "Fix problems automatically in the background" in r.stdout
+
+
+# ------------------------------------------------------------------ review regression (2026-11-15 cross-family review)
+
+def test_emergency_is_recorded_and_alerts(home, monkeypatch):
+    """Review F6: emergency issues must reach the ledger (and thus alerts) via a real pass."""
+    from lasting_plans import tools
+    monkeypatch.setattr(tools, "on_path", lambda name: None if name == "git" else None)
+    put(src(home) / "a.md", "# a\n")
+    scan()
+    out = repair.run(engine.Library())
+    assert any(i["kind"] == "emergency" for i in out["remaining"])
+    led = _ledger(home)
+    assert any(k.startswith("emergency:") for k in led)
+    assert any(a["key"].startswith("emergency:") for a in repair.alerts())
+
+
+def test_migration_runs_before_any_other_git_write(home, monkeypatch):
+    """Review F7: on a v1 layout, repair must restage the watcher (migration step 1)
+    before ANY git write, including canonicalize re-casing."""
+    from lasting_plans import migrate
+    order = []
+    monkeypatch.setattr(migrate.scheduler, "install", lambda lib: order.append("install") or (True, "ok"))
+    monkeypatch.setattr(migrate.scheduler, "supported", lambda: True)
+    sys.path.insert(0, os.path.join(ROOT, "tests"))
+    from test_migrate import make_v1_layout
+    make_v1_layout(home)
+    # make the source also need re-casing, so canonicalize WOULD write if it ran first
+    real_git = gitrepo.git
+    def spy(root, *a, **kw):
+        if a and a[0] in ("commit", "bundle", "merge", "fetch", "mv", "rm", "reset", "add"):
+            order.append(("git-write", a[:2]))
+        return real_git(root, *a, **kw)
+    monkeypatch.setattr(migrate.gitrepo, "git", spy)
+    monkeypatch.setattr(__import__("lasting_plans.sorting", fromlist=["gitrepo"]).gitrepo, "git", spy)
+    repair.run(engine.Library())
+    assert order and order[0] == "install", order[:5]
+    assert cfgmod.load()["layout"] == 2

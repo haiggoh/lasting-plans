@@ -75,7 +75,7 @@ def run(lib, dry_run=False):
     log += _step_commit_dirty(plans_root, pb_root)
     log += _step_merge(plans_root, pb_root)
     log += _step_relocate(lib, plans_root)
-    log += _step_symlink(lib, plans_root, pb_root, state, stamp, log)
+    _step_symlink(lib, plans_root, pb_root, state, stamp, log)   # appends to log in place
     log += _step_config(lib, cfg, plans_root, pb_root)
     log += _step_backfill(lib)
     return log
@@ -183,7 +183,22 @@ def _step_merge(plans_root, pb_root):
                     with open(os.path.join(plans_root, free), "wb") as f:
                         f.write(theirs)
                     gitrepo.git(plans_root, "add", "--", free)
-                    log.append("collision on %s: playbook-side copy kept as %s" % (p, free))
+                    # keep the sidecar pointing at the copy we actually kept
+                    scdir = os.path.join(plans_root, engine.META_DIR, "docs")
+                    if os.path.isdir(scdir):
+                        for name in os.listdir(scdir):
+                            sp = os.path.join(scdir, name)
+                            try:
+                                with open(sp, encoding="utf-8") as f:
+                                    sc = json.load(f)
+                            except (OSError, ValueError):
+                                continue
+                            if isinstance(sc, dict) and sc.get("archive_relpath") == p:
+                                sc["archive_relpath"] = free
+                                with open(sp, "w", encoding="utf-8") as f:
+                                    json.dump(sc, f, indent=2, sort_keys=True, ensure_ascii=False)
+                                gitrepo.git(plans_root, "add", "--", os.path.relpath(sp, plans_root))
+                    log.append("collision on %s: playbook-side copy kept as %s (sidecar updated)" % (p, free))
     gitrepo.git(plans_root, "commit", "-q", "-m", msg)
     log.append("merged %s history into %s" % (pb_root, plans_root))
     return log
@@ -216,9 +231,12 @@ def _step_relocate(lib, plans_root):
         taken.discard(old)
         actual_abs = os.path.join(plans_root, actual)
         if (os.path.exists(d.path) and os.path.exists(actual_abs)
+                and not os.path.samefile(d.path, actual_abs)
                 and engine.sha256_file(actual_abs) == engine.sha256_file(d.path)):
             # same content already sits at the source path (a wedge "(2)" duplicate
-            # that the merge brought in): drop the copy, never overwrite
+            # that the merge brought in): drop the copy, never overwrite. samefile()
+            # guards the case-only situation where old and actual are ONE physical file
+            # on a case-insensitive volume — `git rm` would delete the document itself
             new = actual
             gitrepo.git(plans_root, "rm", "-q", "--", old)
         else:

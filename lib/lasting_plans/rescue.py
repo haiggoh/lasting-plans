@@ -85,26 +85,11 @@ def at_risk(lib, now):
     return sorted(out)
 
 
-def _commit_source_move(src, old, new, message):
-    """The --only commit every source-repo rescue move uses: `git rm --cached` the old
-    path (only if still in the index), add the new one, commit exactly those two paths.
-    The user's other staged changes are never included. No identity ⇒ staged only."""
-    in_index = bool(gitrepo.git(src, "ls-files", "--", old, check=False).stdout.strip())
-    if in_index:
-        gitrepo.git(src, "rm", "--cached", "--quiet", "--", old)
-    gitrepo.git(src, "add", "--", new)
-    if not gitrepo.has_identity(src):
-        return None
-    head = gitrepo.git(src, "rev-parse", "--verify", "-q", "HEAD", check=False).stdout.strip()
-    in_head = bool(head) and bool(gitrepo.git(src, "ls-tree", head, "--", old, check=False).stdout.strip())
-    paths = ([old, new] if in_head else [new])   # --only reads the worktree: a never-committed old path would fail
-    gitrepo.git(src, "commit", "-q", "-m", message, "--only", "--", *paths)
-    return gitrepo.git(src, "rev-parse", "HEAD").stdout.strip()
-
-
 def move_before_cleanup(lib, rel):
-    """os.rename the source doc into <cleanup_rescue_subdir>/ (inode kept ⇒ all metadata
-    survives), then commit the move. Returns the new source relpath."""
+    """Move the source doc into <cleanup_rescue_subdir>/ via sorting.source_move (the one
+    helper; os.rename keeps the inode ⇒ all metadata survives), then verify. Returns
+    the new source relpath."""
+    from . import sorting
     cfg = lib.cfg
     sub = rescue_subdir(cfg)
     src = lib.source
@@ -113,15 +98,12 @@ def move_before_cleanup(lib, rel):
     base = os.path.basename(rel)
     taken = {r for r, _ in engine.walk_docs(src)}
     new_rel = engine._free_relpath(src, sub + "/" + base, taken)
-    new_abs = os.path.join(src, new_rel)
-    os.makedirs(os.path.dirname(new_abs), exist_ok=True)
-    os.rename(old_abs, new_abs)
-    after = metadata.observe(new_abs)
+    sorting.source_move(lib, rel, new_rel,
+                        "Lasting Plans: moved %s out of reach of Claude Code's 30-day cleanup" % base,
+                        force=True)
+    after = metadata.observe(os.path.join(src, new_rel))
     assert (before["created_utc"], before["modified_utc"], before["tags"]) == \
            (after["created_utc"], after["modified_utc"], after["tags"]), "metadata lost on rename"
-    if gitrepo.toplevel(src) == os.path.realpath(src):
-        _commit_source_move(src, rel, new_rel,
-                            "Lasting Plans: moved %s out of reach of Claude Code's 30-day cleanup" % base)
     return new_rel
 
 
@@ -135,7 +117,7 @@ def looks_like_cleanup(lib, doc, now):
     if doc.sc.get("deleted_by") == "user":
         return False, "marked deleted by the user"
     mod = metadata.parse_iso(doc.sc.get("modified_utc") or "")
-    if not mod or (now - mod) <= cleanup_period_days() * 86400:
+    if not mod or (now - mod) <= effective_period_days() * 86400:
         return False, "too recent for the cleanup"
     sha = doc.sc.get("archive_sha256")
     if sha:
@@ -179,6 +161,7 @@ def put_back(lib, doc):
         doc.sc.setdefault("source_history", []).append(new_rel)
     engine.write_sidecar(lib.root, doc.sc)
     if gitrepo.toplevel(src) == os.path.realpath(src):
-        _commit_source_move(src, old_rel, new_rel,
-                            "Lasting Plans: kept %s (removed by Claude Code's 30-day cleanup)" % base)
+        from . import sorting
+        sorting.commit_source_move(src, old_rel, new_rel,
+                                   "Lasting Plans: kept %s (removed by Claude Code's 30-day cleanup)" % base)
     return new_rel

@@ -297,7 +297,11 @@ FIXERS = {
 
 FIXER_ORDER = ["migration_pending", "sidecar_corrupt", "no_identity", "archive_missing",
                "uncommitted", "cleanup_deletion", "type_mismatch", "empty_folder",
-               "metadata_unapplied", "watcher_down"]
+               "metadata_unapplied", "watcher_down",
+               # recorded even when nothing can be fixed: without these the ledger never
+               # learns about them and alerts() could never fire (transient waits by design;
+               # emergency alerts immediately)
+               "transient", "emergency"]
 
 
 # ------------------------------------------------------------------ ledger & journal
@@ -411,10 +415,22 @@ def run(lib, res=None, dry_run=False):
 def _run_locked(lib, res, dry_run):
     from . import sorting
     fixed, remaining, sorted_events = [], [], []
+    done = set()
+    if not dry_run and migrate.needed(lib.cfg):
+        # the migration must restage the watcher and move both repos BEFORE any other
+        # git write happens (Review Focus 1: a 1.x watcher must never see a half-migrated tree)
+        for issue in [i for i in collect_issues(lib, res) if i["kind"] == "migration_pending"]:
+            backup = os.path.join(cfgmod.state_dir(), "repair-backups",
+                                  datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+                                  issue["key"].replace("/", "_")[:80])
+            os.makedirs(backup, exist_ok=True)
+            ok, note = FIXERS[issue["kind"]](lib, issue, backup)
+            _record(issue, ok, note)
+            (fixed if ok else remaining).append(issue)
+            done.add(issue["key"])
     if not dry_run:
         for _k, rel, detail in sorting.canonicalize_folders(lib):   # runs first in every pass
             sorted_events.append(("recased", rel, detail))
-    done = set()
     for _round in range(3):
         issues = collect_issues(lib, res)
         did_fix = False

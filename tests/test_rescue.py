@@ -333,3 +333,33 @@ def test_same_name_new_plan_after_rescue_gets_suffix_in_backup(home):
     scan()
     tracked = [f for f in git(arch(home), "ls-files").splitlines() if f.startswith("again")]
     assert "again.md" in tracked and "again (2).md" in tracked
+
+
+# ------------------------------------------------------------------ review regression (2026-11-15 cross-family review)
+
+def test_no_commit_loop_for_rescued_doc(home):
+    """Review F4: a rescued doc must not trigger a move+commit on every scan."""
+    put(src(home) / "aging.md", "# aging\n", mtime=time.time() - 29 * 86400)
+    scan()
+    rescue.move_before_cleanup(engine.Library(), "aging.md")
+    scan()
+    head1 = git(arch(home), "rev-parse", "HEAD").strip()
+    res = scan()
+    head2 = git(arch(home), "rev-parse", "HEAD").strip()
+    assert head1 == head2, "scan after rescue created a spurious commit"
+    assert not [e for e in res.events if e[0] == "moved"]
+    doc = engine.Library().docs[0]
+    assert doc.sc["archive_relpath"] == "aging.md"           # backup path stays top-level
+    assert doc.sc["source_relpath"] == "_SAVED-FROM-CLEANUP/aging.md"
+
+
+def test_looks_like_cleanup_uses_effective_period(home):
+    """Review F9: configured 3650 but the sweep really runs at 30 — a 40-day-old
+    deletion must still be recognised as a cleanup victim."""
+    (home / ".claude" / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 3650}))
+    put(src(home) / "old.md", "# old\n", mtime=time.time() - 40 * 86400)
+    scan()
+    (src(home) / "old.md").unlink()
+    scan()
+    ok, why = rescue.looks_like_cleanup(engine.Library(), engine.Library().docs[0], time.time())
+    assert ok, why

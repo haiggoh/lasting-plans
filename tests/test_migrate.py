@@ -266,3 +266,20 @@ def test_prepare_roots_ignores_symlinked_retired_root(home):
     assert os.path.islink(pb)
     out = engine.prepare_roots(_lib(home))   # must not raise overlap/ensure errors
     assert out == {"archive": "adopted"}
+
+
+def test_case_only_relocate_never_deletes_the_document(home):
+    """Review F1: when old and target are the SAME physical file (case-only on APFS),
+    the migration must rename, not `git rm` the document away."""
+    plans, pb = make_v1_layout(home)   # pb sidecar: archive _PLAYBOOKS/P1.md, source _playbooks/P1.md
+    from lasting_plans import migrate as _m
+    import lasting_plans.scheduler as _sch
+    home2 = home
+    import lasting_plans.migrate
+    lasting_plans.migrate.scheduler.install = lambda lib: (True, "ok")
+    lasting_plans.migrate.scheduler.supported = lambda: True
+    log = migrate.run(_lib(home))
+    f = plans / "_PLAYBOOKS" / "P1.md"
+    assert f.exists(), "document lost during case-only relocate"
+    assert f.read_text(encoding="utf-8") == "# Handbook P1\n"
+    assert not (plans / "_PLAYBOOKS" / "P1 (2).md").exists()

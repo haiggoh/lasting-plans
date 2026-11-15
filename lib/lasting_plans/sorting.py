@@ -147,10 +147,9 @@ def sort_pass(lib, now):
         base = os.path.basename(rel)
         target = None
         reason = ""
-        if doc is not None or True:
-            ok, reason = is_complete(lib, doc, text, now)
-            if ok:
-                target = arch_sub
+        ok, reason = is_complete(lib, doc, text, now)
+        if ok:
+            target = arch_sub
         if target is None and "/" not in rel and not already_in_pb:
             kind = doc.type if doc else classify_mod.classify(rel, text, lib.cfg.get("classify_overrides"))[0]
             if kind == "playbook":
@@ -173,11 +172,31 @@ def sort_pass(lib, now):
     return events
 
 
-def source_move(lib, old_rel, new_rel, message, force=False):
+def commit_source_move(src, old_rel, new_rel, message):
+    """The commit half of every source-repo move (the ONE place): `git rm --cached`
+    the old path only if still in the index, add the new one, commit exactly those
+    paths with `--only` (the user's other staged changes are never included). The old
+    path is only named when it is in HEAD — `commit --only` reads the worktree, and a
+    never-committed old path would fail the pathspec. No identity ⇒ staged only."""
+    in_index = bool(gitrepo.git(src, "ls-files", "--", old_rel, check=False).stdout.strip())
+    if in_index:
+        gitrepo.git(src, "rm", "--cached", "--quiet", "--", old_rel)
+    gitrepo.git(src, "add", "--", new_rel)
+    if not gitrepo.has_identity(src):
+        return None
+    head = gitrepo.git(src, "rev-parse", "--verify", "-q", "HEAD", check=False).stdout.strip()
+    in_head = bool(head) and bool(gitrepo.git(src, "ls-tree", head, "--", old_rel, check=False).stdout.strip())
+    paths = [old_rel, new_rel] if in_head else [new_rel]
+    gitrepo.git(src, "commit", "-q", "-m", message, "--only", "--", *paths)
+    return gitrepo.git(src, "rev-parse", "HEAD").stdout.strip()
+
+
+def source_move(lib, old_rel, new_rel, message, force=False, commit=True):
     """Move `old_rel` -> `new_rel` in the source folder (and its Git repo, if the
-    source is one). Returns the commit sha, or None when only staged (no Git
-    identity) or skipped (hot file / missing). `force=True` (explicit `complete`)
-    skips the hot-file guard."""
+    source is one) — the ONE helper for every source move. Returns the commit sha,
+    or None when only staged (no Git identity), skipped (hot file / missing), or
+    `commit=False` (caller commits several moves in one commit).
+    `force=True` (explicit `complete`) skips the hot-file guard."""
     src = lib.source
     old_abs = os.path.join(src, old_rel)
     if not os.path.exists(old_abs):
@@ -194,14 +213,21 @@ def source_move(lib, old_rel, new_rel, message, force=False):
     top = gitrepo.toplevel(src)
     if not top or os.path.realpath(top) != os.path.realpath(src):
         return None                                    # not its own repo: plain FS move
+    if not commit:
+        if not case_only:
+            gitrepo.git(src, "add", "-A", "--", old_rel, new_rel, check=False)
+        return None
     if not gitrepo.has_identity(src):
-        gitrepo.git(src, "add", "-A", "--", old_rel, new_rel)   # staged only, retried later
+        gitrepo.git(src, "add", "-A", "--", old_rel, new_rel, check=False)   # staged only, retried later
         return None
     try:
         if case_only:
             gitrepo.git(src, "add", "-A", "--", new_rel)
             return gitrepo.commit_staged_paths(src, [old_rel, new_rel], message)
-        return gitrepo.commit_paths(src, [old_rel, new_rel], message)
+        in_index = bool(gitrepo.git(src, "ls-files", "--", old_rel, check=False).stdout.strip())
+        if in_index:
+            return gitrepo.commit_paths(src, [old_rel, new_rel], message)
+        return commit_source_move(src, old_rel, new_rel, message)
     except gitrepo.GitError:
         gitrepo.git(src, "add", "-A", "--", old_rel, new_rel, check=False)
         return None
@@ -241,7 +267,7 @@ def canonicalize_folders(lib):
             pairs = []
             for p in tracked:
                 np = want + "/" + p[len(prefix):]
-                gitrepo.move_path(src, p, np)
+                source_move(lib, p, np, "", force=True, commit=False)   # one commit for the whole folder below
                 pairs.append((p, np))
             msg = "Lasting Plans: folder name %s/ -> %s/ (canonical spelling)" % (old_dir, want)
             if is_repo and pairs and gitrepo.has_identity(src):
