@@ -77,6 +77,31 @@ def run(lib, dry_run=False):
     log += _step_relocate(lib, plans_root)
     log += _step_symlink(lib, plans_root, pb_root, state, stamp, log)
     log += _step_config(lib, cfg, plans_root, pb_root)
+    log += _step_backfill(lib)
+    return log
+
+
+def _step_backfill(lib, dry_run=False):
+    """Step 8 (idempotent): every archived source doc whose top-level source is gone and
+    looks like a cleanup victim ⇒ put_back. dry_run lists them without writing."""
+    import time as _t
+    from . import rescue
+    log = []
+    now = _t.time()
+    for d in lib.docs:
+        if d.sc.get("origin") != "source":
+            continue
+        s = d.sc.get("source_relpath")
+        if not s or "/" in s or os.path.exists(os.path.join(lib.source, s)):
+            continue
+        ok, why = rescue.looks_like_cleanup(lib, d, now)
+        if not ok:
+            continue
+        if dry_run:
+            log.append("would put back %s (%s)" % (s, why))
+            continue
+        new_rel = rescue.put_back(lib, d)
+        log.append("put back %s -> %s" % (s, new_rel))
     return log
 
 

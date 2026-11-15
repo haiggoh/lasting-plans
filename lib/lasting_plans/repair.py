@@ -14,7 +14,9 @@ import shutil
 import time
 
 from . import config as cfgmod
-from . import engine, gitrepo, metadata, migrate, remote, scheduler, tools
+from . import engine, gitrepo, metadata, migrate, remote, rescue, scheduler, tools
+
+_in_trash = rescue.in_trash  # Trash reading lives in rescue.py (shared with looks_like_cleanup)
 
 
 def _last_commit_with(root, rel):
@@ -24,28 +26,6 @@ def _last_commit_with(root, rel):
         if gitrepo.git(root, "ls-tree", sha, "--", rel, check=False).stdout.strip():
             return sha
     return None
-
-
-def _trash_dir():
-    return os.environ.get("LASTING_PLANS_TRASH_DIR") or os.path.join(cfgmod.home(), ".Trash")
-
-
-def _in_trash(sha):
-    """True if a file with this sha256 sits in the Trash (the user deleted it in Finder).
-    A PermissionError (launchd's TCC context cannot read ~/.Trash) propagates to the
-    caller, which defers instead of guessing."""
-    def _raise(e):
-        raise e
-    t = _trash_dir()
-    for r, _dirs, files in os.walk(t, onerror=_raise):
-        for f in files:
-            p = os.path.join(r, f)
-            try:
-                if os.path.getsize(p) <= engine.MAX_BYTES and engine.sha256_file(p) == sha:
-                    return True
-            except OSError:
-                continue
-    return False
 
 
 def collect_issues(lib, res=None):
@@ -96,6 +76,16 @@ def collect_issues(lib, res=None):
         add("emergency", "git", "git is not installed", "emergency")
     for p, err in lib.corrupt:
         add("sidecar_corrupt", os.path.relpath(p, lib.root), err)
+    if cfg.get("cleanup_protection", "before") != "off":
+        for d in lib.docs:
+            s = d.sc.get("source_relpath")
+            if s and "/" not in s and not os.path.exists(os.path.join(lib.source, s)):
+                ok, why = rescue.looks_like_cleanup(lib, d, time.time())
+                if ok:
+                    add("cleanup_deletion", s, why)
+    for d in lib.docs:
+        if d.sc.get("metadata_unapplied"):
+            add("metadata_unapplied", d.sc["archive_relpath"], ",".join(d.sc["metadata_unapplied"]))
     # empty folders in the archive (no docs, nothing tracked under them)
     if os.path.isdir(os.path.join(lib.root, ".git")):
         tracked = {p for p in gitrepo.git(lib.root, "ls-files", "-z").stdout.split("\0") if p}
@@ -252,6 +242,36 @@ def _fix_watcher_down(lib, issue, backup):
     return ok, msg
 
 
+def _fix_cleanup_deletion(lib, issue, backup):
+    if lib.cfg.get("cleanup_protection", "before") == "off":
+        return False, "cleanup_protection=off"
+    doc = next((d for d in lib.docs if d.sc.get("source_relpath") == issue["path"]), None)
+    if doc is None:
+        return False, "no such document"
+    new_rel = rescue.put_back(lib, doc)
+    return True, "put back as %s" % new_rel
+
+
+def _fix_metadata_unapplied(lib, issue, backup):
+    doc = next((d for d in lib.docs if d.sc["archive_relpath"] == issue["path"]), None)
+    if doc is None or not os.path.exists(doc.path):
+        return False, "document missing"
+    failed = engine._apply_sidecar_meta(doc.path, doc.sc)
+    obs = metadata.observe(doc.path)
+    still = list(failed)
+    if doc.sc.get("modified_utc") and obs["modified_utc"] and \
+            abs(metadata.parse_iso(doc.sc["modified_utc"]) - metadata.parse_iso(obs["modified_utc"])) > 2:
+        still.append("mtime")
+    if still:
+        doc.sc["metadata_unapplied"] = still
+        engine.write_sidecar(doc.root, doc.sc)
+        return False, "still unapplied: %s" % ",".join(still)
+    doc.sc.pop("metadata_unapplied", None)
+    engine.write_sidecar(doc.root, doc.sc)
+    gitrepo.commit_paths(doc.root, [engine.sidecar_rel(doc.id)], "repair: metadata applied to %s" % issue["path"])
+    return True, "metadata applied and verified"
+
+
 def _fix_transient(lib, issue, backup):
     return False, "waits for next pass"
 
@@ -269,12 +289,15 @@ FIXERS = {
     "type_mismatch": _fix_type_mismatch,
     "empty_folder": _fix_empty_folder,
     "watcher_down": _fix_watcher_down,
+    "cleanup_deletion": _fix_cleanup_deletion,
+    "metadata_unapplied": _fix_metadata_unapplied,
     "transient": _fix_transient,
     "emergency": _fix_emergency,
 }
 
 FIXER_ORDER = ["migration_pending", "sidecar_corrupt", "no_identity", "archive_missing",
-               "uncommitted", "type_mismatch", "empty_folder", "watcher_down"]
+               "uncommitted", "cleanup_deletion", "type_mismatch", "empty_folder",
+               "metadata_unapplied", "watcher_down"]
 
 
 # ------------------------------------------------------------------ ledger & journal
@@ -414,6 +437,13 @@ def _run_locked(lib, res, dry_run):
                 sorted_events.append(ev)
             if sorted_events:
                 res = engine._scan_locked(lib)              # the backup follows each sort move
+                did_fix = True
+        if not dry_run and lib.cfg.get("cleanup_protection", "before") == "before":
+            for rel in rescue.at_risk(lib, time.time()):
+                new_rel = rescue.move_before_cleanup(lib, rel)
+                sorted_events.append(("rescued", rel, new_rel))
+            if len(sorted_events) > 0 and any(e[0] == "rescued" for e in sorted_events):
+                res = engine._scan_locked(lib)
                 did_fix = True
         if dry_run or not did_fix:
             break

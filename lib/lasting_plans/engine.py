@@ -211,6 +211,17 @@ def prepare_roots(lib):
     return {"archive": st}
 
 
+def archive_rel_for(cfg, source_rel):
+    """The archive path for a source path: identical, EXCEPT a leading
+    <cleanup_rescue_subdir>/ is stripped — the backup does not mirror the rescue
+    folder (the cleanup never runs in the backup, so the workaround has no purpose
+    there), and a rescued doc keeps its top-level backup path."""
+    rescue = cfg.get("cleanup_rescue_subdir") or "_SAVED-FROM-CLEANUP"
+    if source_rel.startswith(rescue + "/"):
+        return source_rel[len(rescue) + 1:]
+    return source_rel
+
+
 def _free_relpath(root, rel, taken, ignore=None):
     """`ignore` names a path being renamed away case-only: the same physical file
     must not count as 'taken' (neither in `taken` nor via the disk check)."""
@@ -407,7 +418,7 @@ def _handle_new(lib, rel, abspath, data, h, taken, res):
     text = data.decode("utf-8", "replace")
     kind, reason = classify_mod.classify(rel, text, lib.cfg.get("classify_overrides"))
     root = lib.root
-    arel = _free_relpath(root, rel, taken)
+    arel = _free_relpath(root, archive_rel_for(lib.cfg, rel), taken)
     taken.add(arel)
     sc = _new_sidecar(rel, arel, h, kind, reason)
     try:
@@ -439,7 +450,7 @@ def _handle_case_rename(lib, doc, rel, abspath, data, h, taken, res):
     moved = False
     if old_arel != rel and os.path.exists(doc.path):
         taken.discard(old_arel)
-        new_arel = _free_relpath(lib.root, rel, taken, ignore=old_arel)
+        new_arel = _free_relpath(lib.root, archive_rel_for(lib.cfg, rel), taken, ignore=old_arel)
         gitrepo.move_path(lib.root, old_arel, new_arel)
         sc["archive_relpath"] = new_arel
         taken.add(new_arel)
@@ -472,7 +483,7 @@ def _handle_move(lib, doc, rel, abspath, data, h, taken, res):
     moved = False
     if old_arel != rel and os.path.exists(doc.path):
         taken.discard(old_arel)
-        new_arel = _free_relpath(lib.root, rel, taken, ignore=old_arel)
+        new_arel = _free_relpath(lib.root, archive_rel_for(lib.cfg, rel), taken, ignore=old_arel)
         gitrepo.move_path(lib.root, old_arel, new_arel)
         sc["archive_relpath"] = new_arel
         taken.add(new_arel)
@@ -890,15 +901,31 @@ def restore_to_source(lib, doc, force_type=None, apply=False):
         details["action"] = "preview"
         return details, None
 
-    # Copy archive to source
+    # Copy archive to source — but never back to the TOP LEVEL when the restored mtime
+    # is already past the at-risk age: it would be swept again at the next session start
+    from . import rescue
+    mod = metadata.parse_iso(doc.sc.get("modified_utc") or "")
+    if mod and (time.time() - mod) >= (rescue.effective_period_days() - rescue.MARGIN_DAYS) * 86400 \
+            and "/" not in os.path.relpath(dest, lib.source):
+        sub = rescue.rescue_subdir(lib.cfg)
+        base = os.path.basename(dest)
+        taken = {rel for rel, _ in walk_docs(lib.source)}
+        new_rel = _free_relpath(lib.source, sub + "/" + base, taken)
+        dest = os.path.join(lib.source, new_rel)
+        details["note"] = "restored mtime already past the at-risk age — put into %s/ so the cleanup does not re-take it" % sub
+        details["dest_path"] = dest
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     with open(doc.path, "rb") as f:
         data = f.read()
     _atomic_copy_bytes(data, dest)
+    # Git stores no birthtime/mtime/Finder tags — re-apply and verify (2.0.0 regression fix)
+    failed = _apply_sidecar_meta(dest, doc.sc)
+    if failed:
+        doc.sc["metadata_unapplied"] = failed
 
     # Update sidecar with new import hash
     doc.sc["last_import_sha256"] = sha256_bytes(data)
-    doc.sc["source_relpath"] = doc.sc.get("source_relpath") or doc.sc["archive_relpath"]
+    doc.sc["source_relpath"] = os.path.relpath(dest, lib.source)
     if doc.sc.get("source_relpath") not in doc.sc.get("source_history", []):
         doc.sc.setdefault("source_history", []).append(doc.sc["source_relpath"])
     write_sidecar(doc.root, doc.sc)
