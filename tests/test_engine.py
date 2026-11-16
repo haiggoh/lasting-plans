@@ -764,6 +764,32 @@ def test_revision_selectors_and_old_text(home):
     # an all-digit sha prefix would be misread as a revision number (waypoint) — pick a non-digit one
     pre = next(r["sha"][:8] for r in revs if not r["sha"][:8].isdigit())
     assert library.resolve_rev(d, pre) == next(r["sha"] for r in revs if r["sha"].startswith(pre))
+
+
+def test_resolve_rev_digit_only_sha_prefix(home, monkeypatch):
+    """2.0.5: an all-digit sha prefix must resolve to that sha, not be read as a revision number."""
+    from lasting_plans import library
+    d = _three_revisions(home)
+    revs = library.revisions(d)
+    # deterministic: force revision 3's sha to have an all-digit 8-char prefix
+    target = "26691924" + revs[2]["sha"][8:]
+    fake = [dict(r) for r in revs]
+    fake[2]["sha"] = target
+    monkeypatch.setattr(library, "revisions", lambda doc: fake)
+    assert library.resolve_rev(d, "26691924") == target
+
+
+def test_resolve_rev_keeps_numeric_and_ambiguous(home, monkeypatch):
+    """2.0.5: an in-range number keeps meaning the revision; a sha prefix matching
+    several revisions is ambiguous and must error, never guess."""
+    from lasting_plans import library
+    d = _three_revisions(home)
+    revs = library.revisions(d)
+    assert library.resolve_rev(d, "1") == revs[-1]["sha"]          # numeric wins, always
+    fake = [dict(r, sha="ab" + r["sha"][2:]) for r in revs]
+    monkeypatch.setattr(library, "revisions", lambda doc: fake)
+    with pytest.raises(LookupError, match="ambiguous"):
+        library.resolve_rev(d, "ab")
     for bad in ("9", "-3", "-4", "nope", "@1999-01-01"):
         # match our message: a bare IndexError is also a LookupError and would pass
         with pytest.raises(LookupError, match="revision|too far"):

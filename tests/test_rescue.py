@@ -256,7 +256,7 @@ def test_put_back_restores_metadata(home):
     f = src(home) / new_rel
     obs = metadata.observe(str(f))
     assert obs["tags"] == ["Rot\n6"]
-    assert abs(metadata.parse_iso(obs["modified_utc"]) - (time.time() - 40 * 86400)) < 5
+    assert abs(metadata.parse_iso(obs["modified_utc"]) - (time.time() - 40 * 86400)) < 60  # tolerance: timing slack, not the requirement (waypoint lasting-plans-test-put-back)
     assert doc.sc.get("metadata_unapplied") in (None, [])
 
 

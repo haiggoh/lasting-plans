@@ -57,21 +57,28 @@ def resolve_rev(doc, sel):
         if k >= len(revs):
             raise LookupError("only %d revision(s); %s goes back too far" % (len(revs), s))
         return revs[k]["sha"]
-    if s.isdigit():
-        n = int(s)
-        for r in revs:
-            if r["n"] == n:
-                return r["sha"]
-        raise LookupError("revision %d does not exist (1..%d)" % (n, len(revs)))
     if s.startswith("@"):
         cutoff = metadata.parse_iso(s[1:]) + (86400 if len(s) == 11 else 0)
         for r in revs:
             if metadata.parse_iso(r["date"]) < cutoff:
                 return r["sha"]
         raise LookupError("no revision on or before %s" % s[1:])
-    for r in revs:
-        if str(r["sha"]).startswith(s):
-            return r["sha"]
+    # An in-range numeric selector keeps its meaning (revision N) — always wins over a
+    # sha prefix (2.0.5, waypoint lasting-plans-resolve-rev). An out-of-range all-digit
+    # selector still resolves as a sha prefix when it matches exactly one revision.
+    if s.isdigit() and 1 <= int(s) <= len(revs):
+        n = int(s)
+        for r in revs:
+            if r["n"] == n:
+                return r["sha"]
+        raise LookupError("revision %d does not exist (1..%d)" % (n, len(revs)))
+    matches = [r for r in revs if str(r["sha"]).startswith(s)]
+    if len(matches) > 1:
+        raise LookupError("ambiguous: %r is the sha prefix of %d revisions" % (s, len(matches)))
+    if len(matches) == 1:
+        return matches[0]["sha"]
+    if s.isdigit():
+        raise LookupError("revision %d does not exist (1..%d)" % (int(s), len(revs)))
     raise LookupError("%r is not a revision of this document" % s)
 
 
