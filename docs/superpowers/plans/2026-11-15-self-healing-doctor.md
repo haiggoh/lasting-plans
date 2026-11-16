@@ -1,6 +1,6 @@
 # One Mirrored Archive + Self-Healing Doctor (lasting-plans 2.0.0) Implementation Plan
 
-**Status:** approved
+**Status:** completed
 
 > **Lasting Plans:** when every task below is done, set the Status line to `completed` by running `lasting-plans complete "<this file>"` as the closing step.
 
