@@ -98,7 +98,7 @@
     "lib/lasting_plans/config.py": "e49cdd736cc5be8a420ae46c96a966ae56cd9556bddfb879bddf768be0d9722e",
     "lib/lasting_plans/engine.py": "fa5155d2af67e7bf6e44d938fd7c2af5dfd582141a1289277b0210416c6b0a52",
     "lib/lasting_plans/gitrepo.py": "4dc8c5c1e69f37bcec71f2b2b420bce23d3bd241387a6194a82ee6dddeaa8daf",
-    "lib/lasting_plans/library.py": "0801c3bee0e911f1283e077992825a8764f1e4fcad4db32962b6870357e68a80",
+    "lib/lasting_plans/library.py": "5b2ea04e26a43c878155e05fed8f1bffa5f8a2340a0de2aac358a48c4ef8b630",
     "lib/lasting_plans/metadata.py": "9085aa7bc1a1369a80d774ace435199ba2c3972464a6b7327b2ae9f85609b787",
     "lib/lasting_plans/migrate.py": "eb4909470dd398c48996c621ce230056558a333c5b7d54881dd76ca2c04e0df3",
     "lib/lasting_plans/recover.py": "18c025489c6b743a6d9c8de2db4e87cc784f0c53ae369e903b71a97ede1eaaf5",
@@ -114,7 +114,7 @@
     "skills/lasting-plans/SKILL.md": "1f293fd9891a226f593a7d400aca993feb5ac31899a0dbdc1e747d86bf8c5bc0"
   },
   "schema": "haiggoh-portable-build/1",
-  "source_commit": "1ed693f7679e5bfd7b10792470aba37d30e6c2d5",
+  "source_commit": "39be1401c2d92c145041cd79429bb1f47ca27535",
   "source_repo": "haiggoh/lasting-plans",
   "transform_version": "1"
 }
