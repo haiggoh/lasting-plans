@@ -203,7 +203,7 @@ class Busy(Exception):
 
 
 def prepare_roots(lib):
-    st = gitrepo.ensure_repo(lib.root, "archive")
+    st = gitrepo.ensure_repo(lib.root)
     real = os.path.realpath(lib.root)
     src = os.path.realpath(lib.source)
     if real == src or real.startswith(src + os.sep) or src.startswith(real + os.sep):

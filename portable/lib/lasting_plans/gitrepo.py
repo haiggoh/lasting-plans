@@ -27,7 +27,7 @@ def toplevel(path):
     return os.path.realpath(r.stdout.strip()) if r.returncode == 0 else None
 
 
-def ensure_repo(root, role):
+def ensure_repo(root):
     """Create or adopt the archive repo at `root`. Returns a short human status.
 
     - missing or empty dir with no enclosing repo -> git init

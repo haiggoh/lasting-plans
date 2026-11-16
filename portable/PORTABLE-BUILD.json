@@ -88,16 +88,16 @@
     }
   ],
   "files": {
-    ".claude-plugin/plugin.json": "8c668a8019d1408ee767731966542eba1639dbe59e8b05c87b8ebbda16e05029",
-    "VERSION": "be695fc8092ad3706d7d7d3b5104e1eaf8fe69666e5958e375c9952a06fa9514",
+    ".claude-plugin/plugin.json": "0bb0d8adbdc908701d5cbe47c6e98ccd9773d847b2d023509b5611123bb01366",
+    "VERSION": "137f467241023dadfa605db00e630b25a9394d0fc7232718812983ba24b93945",
     "hooks/hooks.json": "032bb93a8920f0024af3af2611cc191572e2ed2b9ba9a9cb47bfd8cc46bd1a9f",
     "hooks/session-start.py": "d4a0731c6a5340502815b6f36a1e2ea4d5a6eda0b87d2ae2d70897a9eebd379d",
-    "lib/lasting_plans/__init__.py": "6308dd86324caed6871362add4877379ba547301eacd56648c946aa1376bab54",
+    "lib/lasting_plans/__init__.py": "1387c5670aaa633484be37a0bdf05be36b72f94700ede96a35616bf5c03e042d",
     "lib/lasting_plans/classify.py": "31274b54f82cc2f5ed2bd859f2a7da1ca06e1d604befdb0d1be920d7d28bacce",
     "lib/lasting_plans/cli.py": "180dd7686d46c837af55b1f179e3378b9fd43fe828bd40f1fa9b09e30d2cc8a3",
     "lib/lasting_plans/config.py": "e49cdd736cc5be8a420ae46c96a966ae56cd9556bddfb879bddf768be0d9722e",
-    "lib/lasting_plans/engine.py": "2d4d724fa16bd9cee7077681f3b060f4571e3f1c8bcdbffd9cf559e4373dad46",
-    "lib/lasting_plans/gitrepo.py": "7efac8812f83c7d5c3760336003817eb3046abcd7ed5c8ef520431f55a8ea864",
+    "lib/lasting_plans/engine.py": "fa5155d2af67e7bf6e44d938fd7c2af5dfd582141a1289277b0210416c6b0a52",
+    "lib/lasting_plans/gitrepo.py": "4dc8c5c1e69f37bcec71f2b2b420bce23d3bd241387a6194a82ee6dddeaa8daf",
     "lib/lasting_plans/library.py": "0801c3bee0e911f1283e077992825a8764f1e4fcad4db32962b6870357e68a80",
     "lib/lasting_plans/metadata.py": "9085aa7bc1a1369a80d774ace435199ba2c3972464a6b7327b2ae9f85609b787",
     "lib/lasting_plans/migrate.py": "eb4909470dd398c48996c621ce230056558a333c5b7d54881dd76ca2c04e0df3",
@@ -114,7 +114,7 @@
     "skills/lasting-plans/SKILL.md": "1f293fd9891a226f593a7d400aca993feb5ac31899a0dbdc1e747d86bf8c5bc0"
   },
   "schema": "haiggoh-portable-build/1",
-  "source_commit": "9ffaa14120dd2d084faa4d41d11e4b283d89485d",
+  "source_commit": "1ed693f7679e5bfd7b10792470aba37d30e6c2d5",
   "source_repo": "haiggoh/lasting-plans",
   "transform_version": "1"
 }

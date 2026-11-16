@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.0.4] — 2026-11-16 — chore
+
+- `gitrepo.ensure_repo` drops the unused `role` parameter (Pyright advisory recorded
+  2026-11-15); the single caller updated.
+
 ## [2.0.3] — 2026-11-16 — hotfix: live-migration robustness (rehearsed on a full copy of live state)
 
 - `move_path`: paths not in HEAD (untracked/staged-new wedge copies) move via
