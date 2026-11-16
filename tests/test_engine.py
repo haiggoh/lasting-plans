@@ -761,7 +761,9 @@ def test_revision_selectors_and_old_text(home):
     assert library.resolve_rev(d, "first") == library.resolve_rev(d, "1")
     assert library.resolve_rev(d, "latest") == revs[0]["sha"] == library.resolve_rev(d, "3")
     assert library.resolve_rev(d, "-1") == revs[1]["sha"]
-    assert library.resolve_rev(d, revs[2]["sha"][:8]) == revs[2]["sha"]
+    # an all-digit sha prefix would be misread as a revision number (waypoint) — pick a non-digit one
+    pre = next(r["sha"][:8] for r in revs if not r["sha"][:8].isdigit())
+    assert library.resolve_rev(d, pre) == next(r["sha"] for r in revs if r["sha"].startswith(pre))
     for bad in ("9", "-3", "-4", "nope", "@1999-01-01"):
         # match our message: a bare IndexError is also a LookupError and would pass
         with pytest.raises(LookupError, match="revision|too far"):
