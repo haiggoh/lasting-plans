@@ -114,7 +114,7 @@
     "skills/lasting-plans/SKILL.md": "1f293fd9891a226f593a7d400aca993feb5ac31899a0dbdc1e747d86bf8c5bc0"
   },
   "schema": "haiggoh-portable-build/1",
-  "source_commit": "999eedcfae7dc43bac4b4add4e54b4c8df74c1f7",
+  "source_commit": "0227200a665f9ef97d3b615b9fce8a3d84af5d27",
   "source_repo": "haiggoh/lasting-plans",
   "transform_version": "1"
 }

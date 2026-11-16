@@ -247,6 +247,7 @@ def test_finished_at_risk_plan_goes_to_archived(home):
 @pytest.mark.skipif(not metadata.IS_MAC, reason="Finder metadata is macOS-only")
 def test_put_back_restores_metadata(home):
     p = put(src(home) / "old.md", "# old\n", mtime=time.time() - 40 * 86400)
+    expected_mtime = os.stat(p).st_mtime          # capture before the deletion below
     assert metadata.write_tags(str(p), ["Rot\n6"])
     scan()
     doc = engine.Library().docs[0]
@@ -256,8 +257,7 @@ def test_put_back_restores_metadata(home):
     f = src(home) / new_rel
     obs = metadata.observe(str(f))
     assert obs["tags"] == ["Rot\n6"]
-    expected_mtime = os.stat(p).st_mtime          # compare against the file's own mtime, not wall-clock (root cause of the flake)
-    assert abs(metadata.parse_iso(obs["modified_utc"]) - expected_mtime) < 5
+    assert abs(metadata.parse_iso(obs["modified_utc"]) - expected_mtime) < 5  # vs the file's own mtime, not wall-clock (flake root cause)
     assert doc.sc.get("metadata_unapplied") in (None, [])
 
 
