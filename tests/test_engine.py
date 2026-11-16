@@ -790,6 +790,34 @@ def test_resolve_rev_keeps_numeric_and_ambiguous(home, monkeypatch):
     monkeypatch.setattr(library, "revisions", lambda doc: fake)
     with pytest.raises(LookupError, match="ambiguous"):
         library.resolve_rev(d, "ab")
+
+
+def test_resolve_rev_numeric_wins_over_colliding_sha(home, monkeypatch):
+    """2.0.5: an in-range number returns the revision even when a sha starts with it."""
+    from lasting_plans import library
+    d = _three_revisions(home)
+    revs = library.revisions(d)
+    fake = [dict(r) for r in revs]
+    fake[1]["sha"] = "2" + fake[1]["sha"][1:]          # revision 2's sha now starts with "2"
+    monkeypatch.setattr(library, "revisions", lambda doc: fake)
+    assert library.resolve_rev(d, "2") == fake[1]["sha"]  # the NUMBER wins, not the sha
+    assert library.resolve_rev(d, "1") == fake[-1]["sha"]  # revs are newest-first: n=1 is last
+
+
+def test_resolve_rev_named_selectors_untouched_by_digit_shas(home, monkeypatch):
+    """2.0.5: latest/first/0/-N/@date keep their meaning even when shas start with digits."""
+    from lasting_plans import library
+    d = _three_revisions(home)
+    revs = library.revisions(d)
+    fake = [dict(r, sha="1" + r["sha"][1:]) for r in revs]   # every sha starts with "1"
+    monkeypatch.setattr(library, "revisions", lambda doc: fake)
+    assert library.resolve_rev(d, "latest") == fake[0]["sha"]
+    assert library.resolve_rev(d, "first") == fake[-1]["sha"]
+    assert library.resolve_rev(d, "0") == fake[0]["sha"]
+    assert library.resolve_rev(d, "-1") == fake[1]["sha"]
+    import datetime
+    day = datetime.datetime.fromtimestamp(metadata.parse_iso(revs[0]["date"])).strftime("%Y-%m-%d")
+    assert library.resolve_rev(d, "@" + day) == fake[0]["sha"]   # newest revision on or before that day
     for bad in ("9", "-3", "-4", "nope", "@1999-01-01"):
         # match our message: a bare IndexError is also a LookupError and would pass
         with pytest.raises(LookupError, match="revision|too far"):

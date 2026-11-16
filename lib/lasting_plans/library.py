@@ -64,21 +64,21 @@ def resolve_rev(doc, sel):
                 return r["sha"]
         raise LookupError("no revision on or before %s" % s[1:])
     # An in-range numeric selector keeps its meaning (revision N) — always wins over a
-    # sha prefix (2.0.5, waypoint lasting-plans-resolve-rev). An out-of-range all-digit
-    # selector still resolves as a sha prefix when it matches exactly one revision.
-    if s.isdigit() and 1 <= int(s) <= len(revs):
+    # sha prefix (2.0.5, waypoint lasting-plans-resolve-rev). Validate against the actual
+    # revision numbers, not len(revs). An out-of-range all-digit selector still resolves
+    # as a sha prefix when it matches exactly one revision.
+    if s.isdigit():
         n = int(s)
-        for r in revs:
-            if r["n"] == n:
-                return r["sha"]
-        raise LookupError("revision %d does not exist (1..%d)" % (n, len(revs)))
+        nums = {r["n"] for r in revs}
+        if n in nums:
+            return next(r["sha"] for r in revs if r["n"] == n)
     matches = [r for r in revs if str(r["sha"]).startswith(s)]
     if len(matches) > 1:
         raise LookupError("ambiguous: %r is the sha prefix of %d revisions" % (s, len(matches)))
     if len(matches) == 1:
         return matches[0]["sha"]
     if s.isdigit():
-        raise LookupError("revision %d does not exist (1..%d)" % (int(s), len(revs)))
+        raise LookupError("revision %d does not exist (1..%d)" % (int(s), max(nums) if nums else 0))
     raise LookupError("%r is not a revision of this document" % s)
 
 
