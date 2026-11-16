@@ -113,6 +113,9 @@ Each task ends with: the exact test command, its EXIT read from a file, pass/fai
 
 **🧪 Receipt 1:** the commands, EXIT, counts, commit, tag SHA, installed version.
 
+- 2026-11-17 00:5x — Receipt 1 ✓: RED 2/2 (LookupError "revision 26691924 does not exist" + DID-NOT-RAISE) → GREEN; full suite 206/206 after review fixes; mutation check (sha-prefix branch removed → digit test red → restored byte-identical); independent review (nvidia-step5-preview, cross-family) → ship-after-fixes, all 4 findings fixed (n-set guard, collision test, untouched-selector test, rescue flake root-caused to file-mtime capture); shipped v2.0.5 tag `ad9a122`, main `64b6453`, installed 2.0.5; dogfood: all-digit prefix resolves, numeric wins, multi-match errors "ambiguous".
+
+
 ### Task 2: one-time triage of the older top-level plans (live, gated)
 
 **Files:** none in the repo — the work is live state plus receipts appended to this plan file.
