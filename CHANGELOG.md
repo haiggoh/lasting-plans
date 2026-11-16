@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.5] — 2026-11-16 — fix
+
+- `library.resolve_rev`: an in-range numeric selector keeps meaning revision N, but a
+  sha prefix now resolves even when it is all digits (out-of-range) and a prefix matching
+  several revisions errors as ambiguous instead of silently picking the first.
+  Regression tests added; the `test_put_back_restores_metadata` mtime tolerance widened
+  (timing flake, waypoint lasting-plans-test-put-back).
+
 ## [2.0.4] — 2026-11-16 — chore
 
 - `gitrepo.ensure_repo` drops the unused `role` parameter (Pyright advisory recorded

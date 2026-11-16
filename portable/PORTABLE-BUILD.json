@@ -88,11 +88,11 @@
     }
   ],
   "files": {
-    ".claude-plugin/plugin.json": "0bb0d8adbdc908701d5cbe47c6e98ccd9773d847b2d023509b5611123bb01366",
-    "VERSION": "137f467241023dadfa605db00e630b25a9394d0fc7232718812983ba24b93945",
+    ".claude-plugin/plugin.json": "9a2a6eb9f0e85360936ecefc1e8bce40e2c60bbf70fe9518dcc5adefc285bd36",
+    "VERSION": "9c65612e39d2c96cbdf45f3553f62e90a8952823e22872b3ca1ddcf156105dfb",
     "hooks/hooks.json": "032bb93a8920f0024af3af2611cc191572e2ed2b9ba9a9cb47bfd8cc46bd1a9f",
     "hooks/session-start.py": "d4a0731c6a5340502815b6f36a1e2ea4d5a6eda0b87d2ae2d70897a9eebd379d",
-    "lib/lasting_plans/__init__.py": "1387c5670aaa633484be37a0bdf05be36b72f94700ede96a35616bf5c03e042d",
+    "lib/lasting_plans/__init__.py": "a3213c75d777ed2196de5a7c97ddd3fd9d029d8edb4a976fb9ee15eab709cf95",
     "lib/lasting_plans/classify.py": "31274b54f82cc2f5ed2bd859f2a7da1ca06e1d604befdb0d1be920d7d28bacce",
     "lib/lasting_plans/cli.py": "180dd7686d46c837af55b1f179e3378b9fd43fe828bd40f1fa9b09e30d2cc8a3",
     "lib/lasting_plans/config.py": "e49cdd736cc5be8a420ae46c96a966ae56cd9556bddfb879bddf768be0d9722e",
@@ -114,7 +114,7 @@
     "skills/lasting-plans/SKILL.md": "1f293fd9891a226f593a7d400aca993feb5ac31899a0dbdc1e747d86bf8c5bc0"
   },
   "schema": "haiggoh-portable-build/1",
-  "source_commit": "39be1401c2d92c145041cd79429bb1f47ca27535",
+  "source_commit": "95a9a82e54d09285131d55f4bbd503e866ac9eb5",
   "source_repo": "haiggoh/lasting-plans",
   "transform_version": "1"
 }
