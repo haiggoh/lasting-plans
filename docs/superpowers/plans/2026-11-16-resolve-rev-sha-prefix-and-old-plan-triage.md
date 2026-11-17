@@ -1,6 +1,6 @@
 # resolve_rev sha-prefix fix + one-time triage of old top-level plans (lasting-plans 2.0.5) Implementation Plan
 
-**Status:** draft
+**Status:** completed
 
 > **Lasting Plans:** when every task below is done, set the Status line to `completed` by running `lasting-plans complete "<this file>"` as the closing step.
 
@@ -128,6 +128,9 @@ Each task ends with: the exact test command, its EXIT read from a file, pass/fai
 - [ ] **Step 6 — receipts.** Append to THIS plan file: the stamp, the table, the two run outputs, the discriminant results, known-open items. Commit on the docs branch.
 
 **🧪 Receipt 2:** the above, including the convergence run and the untouched-user-work proof.
+
+- 2026-11-17 02:1x — Receipt 2 ✓ (blanket `go`): backup `~/Claude-plans-triage-20261116T235925Z/` (bundles verify 0/0 + meta copies + before-snapshots); disposition table measured read-only: 85 top-level plans, 0 archive / 0 playbooks / 0 rescue / 85 stays; `repair --dry-run` listed 0 moves; apply ran twice → both "0 fixed, 0 remaining" exit 0, zero moves; discriminants: no top-level .md lost, `~/.claude/plans` and `~/Claude-plans` status byte-identical before/after (user's uncommitted work untouched), doctor 0 ✗. The deferred triage is a verified no-op — 2.0.x background repair already settled everything movable.
+
 
 ## ⚠️ Side-effect classification
 
